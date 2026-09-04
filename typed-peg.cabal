@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               typed-peg
-version:            0.1.0.0
+version:            0.2.0.0
 synopsis:           Type-safe PEG parser combinators
 description:
   A library for building PEG (Parsing Expression Grammar) parsers
@@ -8,9 +8,14 @@ description:
   indexed by their nullability and FIRST sets at the type level,
   making left-recursive grammars a type error.
   .
-  A quasi-quoter ('PEG.QQ') allows writing grammars in a concrete
+  A quasi-quoter (@PEG.QQ@) allows writing grammars in a concrete
   DSL syntax. Indentation-sensitive parsing is supported natively
-  via 'PEG.Indent'.
+  via @PEG.Indent@.
+  .
+  Parsers run over any @PEG.Stream@ instance: @String@, strict and
+  lazy @Text@, and strict and lazy @ByteString@. A character class
+  produces a chunk of the input stream, so matching @[a-z]+@ against
+  a @Text@ yields a slice rather than a @[Char]@.
 
 license:            BSD-3-Clause
 license-file:       LICENSE
@@ -21,8 +26,10 @@ homepage:           https://github.com/rodrigogribeiro/typed-peg
 bug-reports:        https://github.com/rodrigogribeiro/typed-peg/issues
 build-type:         Simple
 extra-source-files: README.md
-extra-doc-files:    CHANGELOG.md
-tested-with:        GHC == 9.6.7
+extra-doc-files:
+  CHANGELOG.md
+  peg-patterns.md
+tested-with:        GHC == 9.10.3
 
 source-repository head
   type:     git

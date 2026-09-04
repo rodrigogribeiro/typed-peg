@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.2.0.0 — 2026-09-04
+
+This release is **not source-compatible with 0.1.0.0**: `PExp`, `Rules`,
+`Grammar`, `Result` and `PState` all gain a leading stream type parameter, and
+a rule whose result is a character-class repetition changes result type. See
+*Changed* below for the migration.
 
 ### Added — parsing any stream, not just `String`
 
