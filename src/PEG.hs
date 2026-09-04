@@ -20,6 +20,7 @@
 -- See the @examples/@ directory for complete working grammars.
 module PEG
   ( module PEG.CharSet
+  , module PEG.Stream
   , module PEG.Type
   , module PEG.TyLevel
   , module PEG.Member
@@ -31,6 +32,7 @@ module PEG
 
 import PEG.CharSet
 import PEG.Grammar
+import PEG.Stream
 import PEG.Indent
 import PEG.Member
 import PEG.Parse

@@ -16,13 +16,13 @@ module Bench.Peg
   , idents
   , JValue (..)
   , json
-  , runArith
-  , runCsv
-  , runIdents
-  , runJson
-  , runQuotedNot
-  , runQuotedCls
+  , arithS, csvS, identsS, jsonS, quotedNotS, quotedClsS
+  , arithT, csvT, identsT, jsonT, quotedNotT, quotedClsT
+  , arithB, csvB, identsB, jsonB, quotedNotB, quotedClsB
   ) where
+
+import qualified Data.ByteString as B
+import qualified Data.Text       as T
 
 import PEG
 import PEG.QQ (pegRules)
@@ -58,8 +58,8 @@ addOp _ (c  , _) = error ("addOp: unexpected operator " ++ show c)
 foldOps :: Exp -> [(Char, Exp)] -> Exp
 foldOps = foldl addOp
 
-readInt :: String -> Exp
-readInt ds = Lit (read ds)
+readInt :: Stream s => s -> Exp
+readInt ds = Lit (read (chunkToString ds))
 
 type ArithEnv =
   '[ '("expr"  , 'EnvEntry ('MkTy 'False '["term", "factor", "number"]) Exp)
@@ -68,7 +68,8 @@ type ArithEnv =
    , '("number", 'EnvEntry ('MkTy 'False '[])                           Exp)
    ]
 
-arith :: Grammar ArithEnv _ Exp
+{-# INLINABLE arith #-}
+arith :: Stream s => Grammar s ArithEnv _ Exp
 arith =
   Grammar
     [pegRules|
@@ -91,7 +92,8 @@ type CsvEnv =
    , '("num", 'EnvEntry ('MkTy 'False '[])             Int)
    ]
 
-csv :: Grammar CsvEnv _ [[Int]]
+{-# INLINABLE csv #-}
+csv :: Stream s => Grammar s CsvEnv _ [[Int]]
 csv =
   Grammar
     [pegRules|
@@ -101,24 +103,27 @@ csv =
     |]
     (nt @"csv")
 
-readNat :: String -> Int
-readNat = read
+readNat :: Stream s => s -> Int
+readNat = read . chunkToString
 
 --------------------------------------------------------------------------------
 -- Identifier list (wide character classes)
 --------------------------------------------------------------------------------
 
-type IdentEnv =
-  '[ '("idents", 'EnvEntry ('MkTy 'False '["ident"]) [String])
-   , '("ident" , 'EnvEntry ('MkTy 'False '[])        String)
+-- The environment is parameterised by the stream: @ident@ is a character
+-- class, so its result is a chunk of the input.
+type IdentEnv s =
+  '[ '("idents", 'EnvEntry ('MkTy 'False '["ident"]) [s])
+   , '("ident" , 'EnvEntry ('MkTy 'False '[])        s)
    ]
 
-idents :: Grammar IdentEnv _ [String]
+{-# INLINABLE idents #-}
+idents :: Stream s => Grammar s (IdentEnv s) _ [s]
 idents =
   Grammar
     [pegRules|
        idents <- i:ident is:(' ' j:ident)*     { i : is }
-       ident  <- c:[a-zA-Z_] cs:[a-zA-Z0-9_]*  { c : cs }
+       ident  <- &[a-zA-Z_] cs:[a-zA-Z0-9_]+   { cs }
     |]
     (nt @"idents")
 
@@ -135,9 +140,9 @@ data JValue
   | JObj  [(String, JValue)]
   deriving (Eq, Show)
 
-mkNum :: Maybe Char -> String -> JValue
-mkNum Nothing  ds = JNum (read ds)
-mkNum (Just _) ds = JNum (negate (read ds))
+mkNum :: Stream s => Maybe Char -> s -> JValue
+mkNum Nothing  ds = JNum (read (chunkToString ds))
+mkNum (Just _) ds = JNum (negate (read (chunkToString ds)))
 
 orEmpty :: Maybe [a] -> [a]
 orEmpty Nothing   = []
@@ -156,7 +161,8 @@ type JsonEnv =
    , '("ws"     , 'EnvEntry ('MkTy 'True  '[])                                                    ())
    ]
 
-json :: Grammar JsonEnv _ JValue
+{-# INLINABLE json #-}
+json :: Stream s => Grammar s JsonEnv _ JValue
 json =
   Grammar
     [pegRules|
@@ -188,12 +194,20 @@ json =
 -- compiles to one 'Sat' node.
 --------------------------------------------------------------------------------
 
-type QuotedEnv =
+-- @(!'"' .)*@ is a compound repetition, so it still yields a @['Char']@ ...
+type QuotedNotEnv =
   '[ '("qs", 'EnvEntry ('MkTy 'False '["q"]) [String])
    , '("q" , 'EnvEntry ('MkTy 'False '[])    String)
    ]
 
-quotedNot :: Grammar QuotedEnv _ [String]
+-- ... whereas @[^"]*@ is a character class and yields a chunk.
+type QuotedClsEnv s =
+  '[ '("qs", 'EnvEntry ('MkTy 'False '["q"]) [s])
+   , '("q" , 'EnvEntry ('MkTy 'False '[])    s)
+   ]
+
+{-# INLINABLE quotedNot #-}
+quotedNot :: Stream s => Grammar s QuotedNotEnv _ [String]
 quotedNot =
   Grammar
     [pegRules|
@@ -202,7 +216,8 @@ quotedNot =
     |]
     (nt @"qs")
 
-quotedCls :: Grammar QuotedEnv _ [String]
+{-# INLINABLE quotedCls #-}
+quotedCls :: Stream s => Grammar s (QuotedClsEnv s) _ [s]
 quotedCls =
   Grammar
     [pegRules|
@@ -213,64 +228,49 @@ quotedCls =
 
 --------------------------------------------------------------------------------
 -- Runners (force the result so criterion measures the whole parse)
+--
+-- Each parser is bound monomorphically at each stream type.  That matters: a
+-- grammar left polymorphic in its stream is a function of a 'Stream'
+-- dictionary rather than a constant, so the compiled parser would be rebuilt
+-- on every call.  NOINLINE keeps each one a shared CAF, so the measurement is
+-- of parsing rather than of re-traversing the grammar.
 --------------------------------------------------------------------------------
 
--- Bind the compiled parser once, exactly as a megaparsec user binds a
--- top-level parser value.  NOINLINE keeps it a shared CAF so the measurement
--- is of parsing, not of re-traversing the grammar.
-parseArith :: String -> Result Exp
-parseArith = parse arith
-{-# NOINLINE parseArith #-}
-
-parseCsv :: String -> Result [[Int]]
-parseCsv = parse csv
-{-# NOINLINE parseCsv #-}
-
-parseIdents :: String -> Result [String]
-parseIdents = parse idents
-{-# NOINLINE parseIdents #-}
-
-parseJson :: String -> Result JValue
-parseJson = parse json
-{-# NOINLINE parseJson #-}
-
-parseQuotedNot :: String -> Result [String]
-parseQuotedNot = parse quotedNot
-{-# NOINLINE parseQuotedNot #-}
-
-parseQuotedCls :: String -> Result [String]
-parseQuotedCls = parse quotedCls
-{-# NOINLINE parseQuotedCls #-}
-
-runArith :: String -> Int
-runArith s = case parseArith s of
+runArith :: Stream s => (s -> Result s Exp) -> s -> Int
+runArith p s = case p s of
   OK e _ _ -> evalExp e
   Fail     -> error "runArith: parse failed"
+{-# INLINE runArith #-}
 
-runCsv :: String -> Int
-runCsv s = case parseCsv s of
+runCsv :: Stream s => (s -> Result s [[Int]]) -> s -> Int
+runCsv p s = case p s of
   OK rs _ _ -> sum (map sum rs)
   Fail      -> error "runCsv: parse failed"
+{-# INLINE runCsv #-}
 
-runIdents :: String -> Int
-runIdents s = case parseIdents s of
-  OK is _ _ -> sum (map length is)
+runIdents :: Stream s => (s -> Result s [s]) -> s -> Int
+runIdents p s = case p s of
+  OK is _ _ -> sum (map lengthS is)
   Fail      -> error "runIdents: parse failed"
+{-# INLINE runIdents #-}
 
-runJson :: String -> Int
-runJson s = case parseJson s of
+runJson :: Stream s => (s -> Result s JValue) -> s -> Int
+runJson p s = case p s of
   OK v _ _ -> sizeJ v
   Fail     -> error "runJson: parse failed"
+{-# INLINE runJson #-}
 
-runQuotedNot :: String -> Int
-runQuotedNot s = case parseQuotedNot s of
+runQuotedNot :: Stream s => (s -> Result s [String]) -> s -> Int
+runQuotedNot p s = case p s of
   OK xs _ _ -> sum (map length xs)
   Fail      -> error "runQuotedNot: parse failed"
+{-# INLINE runQuotedNot #-}
 
-runQuotedCls :: String -> Int
-runQuotedCls s = case parseQuotedCls s of
-  OK xs _ _ -> sum (map length xs)
+runQuotedCls :: Stream s => (s -> Result s [s]) -> s -> Int
+runQuotedCls p s = case p s of
+  OK xs _ _ -> sum (map lengthS xs)
   Fail      -> error "runQuotedCls: parse failed"
+{-# INLINE runQuotedCls #-}
 
 sizeJ :: JValue -> Int
 sizeJ JNull      = 1
@@ -279,3 +279,138 @@ sizeJ (JNum n)   = n
 sizeJ (JStr t)   = length t
 sizeJ (JArr xs)  = 1 + sum (map sizeJ xs)
 sizeJ (JObj ps)  = 1 + sum [ length k + sizeJ v | (k, v) <- ps ]
+
+--------------------------------------------------------------------------------
+-- Monomorphic entry points, one set per stream.
+--
+-- The parser must be bound as its own CAF.  Writing @arithS = runArith (parse
+-- arith)@ instead lets GHC eta-expand to @\s -> case parse arith s of ...@,
+-- which rebuilds the compiled parser on every single call -- a 2.5x slowdown
+-- that no amount of specialisation recovers.
+--------------------------------------------------------------------------------
+
+pArithS :: String -> Result String Exp
+pArithS = parse arith
+{-# NOINLINE pArithS #-}
+
+arithS :: String -> Int
+arithS = runArith pArithS
+
+pCsvS :: String -> Result String [[Int]]
+pCsvS = parse csv
+{-# NOINLINE pCsvS #-}
+
+csvS :: String -> Int
+csvS = runCsv pCsvS
+
+pJsonS :: String -> Result String JValue
+pJsonS = parse json
+{-# NOINLINE pJsonS #-}
+
+jsonS :: String -> Int
+jsonS = runJson pJsonS
+
+pQuotedNotS :: String -> Result String [String]
+pQuotedNotS = parse quotedNot
+{-# NOINLINE pQuotedNotS #-}
+
+quotedNotS :: String -> Int
+quotedNotS = runQuotedNot pQuotedNotS
+
+pIdentsS :: String -> Result String [String]
+pIdentsS = parse idents
+{-# NOINLINE pIdentsS #-}
+
+identsS :: String -> Int
+identsS = runIdents pIdentsS
+
+pQuotedClsS :: String -> Result String [String]
+pQuotedClsS = parse quotedCls
+{-# NOINLINE pQuotedClsS #-}
+
+quotedClsS :: String -> Int
+quotedClsS = runQuotedCls pQuotedClsS
+
+pArithT :: T.Text -> Result T.Text Exp
+pArithT = parse arith
+{-# NOINLINE pArithT #-}
+
+arithT :: T.Text -> Int
+arithT = runArith pArithT
+
+pCsvT :: T.Text -> Result T.Text [[Int]]
+pCsvT = parse csv
+{-# NOINLINE pCsvT #-}
+
+csvT :: T.Text -> Int
+csvT = runCsv pCsvT
+
+pJsonT :: T.Text -> Result T.Text JValue
+pJsonT = parse json
+{-# NOINLINE pJsonT #-}
+
+jsonT :: T.Text -> Int
+jsonT = runJson pJsonT
+
+pQuotedNotT :: T.Text -> Result T.Text [String]
+pQuotedNotT = parse quotedNot
+{-# NOINLINE pQuotedNotT #-}
+
+quotedNotT :: T.Text -> Int
+quotedNotT = runQuotedNot pQuotedNotT
+
+pIdentsT :: T.Text -> Result T.Text [T.Text]
+pIdentsT = parse idents
+{-# NOINLINE pIdentsT #-}
+
+identsT :: T.Text -> Int
+identsT = runIdents pIdentsT
+
+pQuotedClsT :: T.Text -> Result T.Text [T.Text]
+pQuotedClsT = parse quotedCls
+{-# NOINLINE pQuotedClsT #-}
+
+quotedClsT :: T.Text -> Int
+quotedClsT = runQuotedCls pQuotedClsT
+
+pArithB :: B.ByteString -> Result B.ByteString Exp
+pArithB = parse arith
+{-# NOINLINE pArithB #-}
+
+arithB :: B.ByteString -> Int
+arithB = runArith pArithB
+
+pCsvB :: B.ByteString -> Result B.ByteString [[Int]]
+pCsvB = parse csv
+{-# NOINLINE pCsvB #-}
+
+csvB :: B.ByteString -> Int
+csvB = runCsv pCsvB
+
+pJsonB :: B.ByteString -> Result B.ByteString JValue
+pJsonB = parse json
+{-# NOINLINE pJsonB #-}
+
+jsonB :: B.ByteString -> Int
+jsonB = runJson pJsonB
+
+pQuotedNotB :: B.ByteString -> Result B.ByteString [String]
+pQuotedNotB = parse quotedNot
+{-# NOINLINE pQuotedNotB #-}
+
+quotedNotB :: B.ByteString -> Int
+quotedNotB = runQuotedNot pQuotedNotB
+
+pIdentsB :: B.ByteString -> Result B.ByteString [B.ByteString]
+pIdentsB = parse idents
+{-# NOINLINE pIdentsB #-}
+
+identsB :: B.ByteString -> Int
+identsB = runIdents pIdentsB
+
+pQuotedClsB :: B.ByteString -> Result B.ByteString [B.ByteString]
+pQuotedClsB = parse quotedCls
+{-# NOINLINE pQuotedClsB #-}
+
+quotedClsB :: B.ByteString -> Int
+quotedClsB = runQuotedCls pQuotedClsB

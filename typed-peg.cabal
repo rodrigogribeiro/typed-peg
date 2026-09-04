@@ -60,12 +60,15 @@ library
     PEG.QQ
     PEG.QQ.HsExp
     PEG.Semantics.Simple
+    PEG.Stream
     PEG.Syntax
     PEG.TyLevel
     PEG.Type
   build-depends:
       base             >= 4.18 && < 5
+    , bytestring       >= 0.11 && < 0.13
     , template-haskell >= 2.19 && < 2.24
+    , text             >= 2.0  && < 2.2
 
 test-suite typed-peg-examples
   import:          common-opts
@@ -75,6 +78,8 @@ test-suite typed-peg-examples
   other-modules:   Arith, Layout, Compat
   build-depends:
       base
+    , bytestring
+    , text
     , typed-peg
 
 benchmark typed-peg-bench
@@ -90,6 +95,7 @@ benchmark typed-peg-bench
   build-depends:
       base
     , typed-peg
+    , bytestring
     , criterion    >= 1.6 && < 1.7
     , megaparsec   >= 9.5 && < 10
     , deepseq

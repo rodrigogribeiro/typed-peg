@@ -20,16 +20,20 @@ data DoStmt
   | Nested [DoStmt]
   deriving (Eq, Show)
 
-type DoEnv =
+-- | The environment is parameterised by the stream, because @name@ is a
+-- character class and so produces a chunk of the input rather than a
+-- 'String'.  Any rule whose result is a chunk pushes @s@ into the
+-- environment this way.
+type DoEnv s =
   '[ '("doexp" , 'EnvEntry ('MkTy 'False '[])                               [DoStmt])
    , '("istmts", 'EnvEntry ('MkTy 'False '["ws", "stmt", "doexp", "name"]) [DoStmt])
    , '("stmts" , 'EnvEntry ('MkTy 'False '["ws"])                          [DoStmt])
    , '("stmt"  , 'EnvEntry ('MkTy 'False '["doexp", "name"])               DoStmt)
-   , '("name"  , 'EnvEntry ('MkTy 'False '[])                              String)
+   , '("name"  , 'EnvEntry ('MkTy 'False '[])                              s)
    , '("ws"    , 'EnvEntry ('MkTy 'True  '[])                              ())
    ]
 
-doExp :: Grammar DoEnv _ [DoStmt]
+doExp :: Stream s => Grammar s (DoEnv s) _ [DoStmt]
 doExp =
   Grammar
     [pegRules|
@@ -39,7 +43,7 @@ doExp =
 
        stmts  <- r:(ws '{' ws s:stmt ss:(ws ';' ws t:stmt)* ws '}' { s : ss })^~
 
-       stmt   <- d:doexp { Nested d } / n:name { Atom n }
+       stmt   <- d:doexp { Nested d } / n:name { Atom (chunkToString n) }
 
        name   <- cs:[a-z]+
 

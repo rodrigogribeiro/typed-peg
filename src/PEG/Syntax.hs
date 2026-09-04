@@ -11,11 +11,16 @@
 
 -- | The PEG expression GADT and combinator API.
 --
--- 'PExp' is the core type: a GADT indexed by the grammar environment,
--- the 'PEG.Type.Ty' of the expression (nullability + FIRST set), and the
--- Haskell result type.  Combinators like '<*>.' and '.||.' propagate type
--- information at the kind level so that 'PEG.Grammar.Acyclic' can be checked
--- without running the parser.
+-- 'PExp' is the core type: a GADT indexed by the input stream, the grammar
+-- environment, the 'PEG.Type.Ty' of the expression (nullability + FIRST set),
+-- and the Haskell result type.  Combinators like '<*>.' and '.||.' propagate
+-- type information at the kind level so that 'PEG.Grammar.Acyclic' can be
+-- checked without running the parser.
+--
+-- The first parameter, @s@, is the stream the expression consumes; see
+-- "PEG.Stream".  It appears in the type because a character class produces a
+-- /chunk of that stream/ — matching @[a-z]+@ against a 'Data.Text.Text'
+-- yields a 'Data.Text.Text' slice, not a @['Char']@.
 --
 -- Most users will not build 'PExp' values directly; instead they use the
 -- quasi-quoter in "PEG.QQ".
@@ -26,6 +31,8 @@ module PEG.Syntax
   , sat
   , charClass
   , notCharClass
+  , spanOf
+  , spanOf1
   , pureP
   , fmapP
   , indent
@@ -54,8 +61,8 @@ import PEG.Type
 import PEG.TyLevel
 import PEG.Member
 
--- | A singleton witness for a non-terminal name @s@.
-data Name (s :: Symbol) = Name
+-- | A singleton witness for a non-terminal name @n@.
+data Name (n :: Symbol) = Name
 
 -- | The 'Ty' of a sequence @e1 e2@.
 type SeqTy t1 t2 =
@@ -67,12 +74,12 @@ type ChoiceTy t1 t2 =
   'MkTy (Or  (Nullable t1) (Nullable t2))
         (Union (First t1) (First t2))
 
--- | The 'Ty' of a non-terminal reference @s@ looked up in @env@.
-type NTTy s env =
-  'MkTy (Nullable (TyOf (Lookup s env)))
-        (ConsIfAbsent s (First (TyOf (Lookup s env))))
+-- | The 'Ty' of a non-terminal reference @n@ looked up in @env@.
+type NTTy n env =
+  'MkTy (Nullable (TyOf (Lookup n env)))
+        (ConsIfAbsent n (First (TyOf (Lookup n env))))
 
--- | A typed PEG expression.
+-- | A typed PEG expression over the stream @s@.
 --
 -- Constructors correspond to the standard PEG operators:
 --
@@ -80,6 +87,8 @@ type NTTy s env =
 -- * 'Term'   — match a specific character
 -- * 'Sat'    — match any character of a 'CharSet' (a character class)
 -- * 'Str'    — match a non-empty string literal
+-- * 'Span'   — match a run of characters of a 'CharSet', possibly empty
+-- * 'Span1'  — match a non-empty run of characters of a 'CharSet'
 -- * 'AnyChar'— match any character
 -- * 'NT'     — invoke a named non-terminal
 -- * 'Seq'    — sequential composition (@e1 e2@)
@@ -90,132 +99,157 @@ type NTTy s env =
 -- * 'Indent' — require the next token to satisfy an indentation relation
 -- * 'Position'— set the column relation for tokens inside the sub-expression
 -- * 'Align'  — require the next token to be aligned with the current position
-data PExp (env :: Env) (ty :: Ty) (a :: Type) where
-  Pure     :: a -> PExp env ('MkTy 'True '[]) a
-  Term     :: Char -> PExp env ('MkTy 'False '[]) Char
-  -- | Match one character of a class.  This is what character classes such as
-  -- @[a-zA-Z0-9_]@ compile to: a single bit test instead of a chain of
+data PExp (s :: Type) (env :: Env) (ty :: Ty) (a :: Type) where
+  Pure     :: a -> PExp s env ('MkTy 'True '[]) a
+  Term     :: Char -> PExp s env ('MkTy 'False '[]) Char
+  -- | Match one character of a class.  This is what a character class such as
+  -- @[a-zA-Z0-9_]@ compiles to: a single bit test instead of a chain of
   -- ordered choices.
-  Sat      :: !CharSet -> PExp env ('MkTy 'False '[]) Char
+  Sat      :: !CharSet -> PExp s env ('MkTy 'False '[]) Char
   -- | Match a string literal.  The string must be non-empty (the 'Ty' index
   -- claims the expression is not nullable); use 'pureP' @""@ otherwise.
-  Str      :: String -> PExp env ('MkTy 'False '[]) String
-  AnyChar  :: PExp env ('MkTy 'False '[]) Char
-  NT       :: ( KnownSymbol s
-              , KnownMember s env (TyOf (Lookup s env)) (ResOf (Lookup s env))
+  --
+  -- The result is the literal itself, so it is shared rather than sliced out
+  -- of the input.
+  Str      :: String -> PExp s env ('MkTy 'False '[]) String
+  -- | Match the longest run of characters belonging to a class, possibly
+  -- empty — what @[a-z]*@ compiles to.  The result is a chunk of the input
+  -- stream, so on 'Data.Text.Text' this is a slice and costs no copy.
+  Span     :: !CharSet -> PExp s env ('MkTy 'True  '[]) s
+  -- | As 'Span', but the run must be non-empty: @[a-z]+@.
+  Span1    :: !CharSet -> PExp s env ('MkTy 'False '[]) s
+  AnyChar  :: PExp s env ('MkTy 'False '[]) Char
+  NT       :: ( KnownSymbol n
+              , KnownMember n env (TyOf (Lookup n env)) (ResOf (Lookup n env))
               )
-           => Name s
-           -> PExp env (NTTy s env) (ResOf (Lookup s env))
-  Seq      :: PExp env t1 (a -> b)
-           -> PExp env t2 a
-           -> PExp env (SeqTy t1 t2) b
-  Choice   :: PExp env t1 a
-           -> PExp env t2 a
-           -> PExp env (ChoiceTy t1 t2) a
-  Star     :: PExp env ('MkTy 'False f) a
-           -> PExp env ('MkTy 'True  f) [a]
-  Not      :: PExp env ('MkTy n f) a
-           -> PExp env ('MkTy 'True f) ()
+           => Name n
+           -> PExp s env (NTTy n env) (ResOf (Lookup n env))
+  Seq      :: PExp s env t1 (a -> b)
+           -> PExp s env t2 a
+           -> PExp s env (SeqTy t1 t2) b
+  Choice   :: PExp s env t1 a
+           -> PExp s env t2 a
+           -> PExp s env (ChoiceTy t1 t2) a
+  Star     :: PExp s env ('MkTy 'False f) a
+           -> PExp s env ('MkTy 'True  f) [a]
+  Not      :: PExp s env ('MkTy n f) a
+           -> PExp s env ('MkTy 'True f) ()
   Map      :: (a -> b)
-           -> PExp env ty a
-           -> PExp env ty b
+           -> PExp s env ty a
+           -> PExp s env ty b
   Indent   :: Rel n
-           -> PExp env ty a
-           -> PExp env ty a
+           -> PExp s env ty a
+           -> PExp s env ty a
   Position :: Rel n
-           -> PExp env ty a
-           -> PExp env ty a
-  Align    :: PExp env ty a
-           -> PExp env ty a
+           -> PExp s env ty a
+           -> PExp s env ty a
+  Align    :: PExp s env ty a
+           -> PExp s env ty a
 
-instance Functor (PExp env ty) where
+instance Functor (PExp s env ty) where
   fmap = Map
 
 -- | Reference a non-terminal by name using a type application:
 -- @nt \@\"ruleName\"@.
-nt :: forall s env.
-      ( KnownSymbol s
-      , KnownMember s env (TyOf (Lookup s env)) (ResOf (Lookup s env))
+--
+-- The name is deliberately the /first/ quantified variable, so that
+-- @nt \@\"expr\"@ keeps working: the stream and environment are recovered by
+-- unification.
+nt :: forall n env s.
+      ( KnownSymbol n
+      , KnownMember n env (TyOf (Lookup n env)) (ResOf (Lookup n env))
       )
-   => PExp env (NTTy s env) (ResOf (Lookup s env))
-nt = NT (Name :: Name s)
+   => PExp s env (NTTy n env) (ResOf (Lookup n env))
+nt = NT (Name :: Name n)
 
 -- | Succeed without consuming any input.
-pureP :: a -> PExp env ('MkTy 'True '[]) a
+pureP :: a -> PExp s env ('MkTy 'True '[]) a
 pureP = Pure
 
 -- | Apply a function to the result of an expression.
-fmapP :: (a -> b) -> PExp env ty a -> PExp env ty b
+fmapP :: (a -> b) -> PExp s env ty a -> PExp s env ty b
 fmapP = Map
 
 -- | Require the sub-expression to satisfy the given column relation.
-indent :: Rel n -> PExp env ty a -> PExp env ty a
+indent :: Rel n -> PExp s env ty a -> PExp s env ty a
 indent = Indent
 
 -- | Override the token mode for the sub-expression.
-position :: Rel n -> PExp env ty a -> PExp env ty a
+position :: Rel n -> PExp s env ty a -> PExp s env ty a
 position = Position
 
 -- | Require the sub-expression to start at the current alignment column.
-align :: PExp env ty a -> PExp env ty a
+align :: PExp s env ty a -> PExp s env ty a
 align = Align
 
 -- | Infix synonym for 'fmapP'.
-(<$>.) :: (a -> b) -> PExp env ty a -> PExp env ty b
+(<$>.) :: (a -> b) -> PExp s env ty a -> PExp s env ty b
 (<$>.) = Map
 infixl 4 <$>.
 
 -- | Infix sequential composition.
-(<*>.) :: PExp env t1 (a -> b)
-       -> PExp env t2 a
-       -> PExp env (SeqTy t1 t2) b
+(<*>.) :: PExp s env t1 (a -> b)
+       -> PExp s env t2 a
+       -> PExp s env (SeqTy t1 t2) b
 (<*>.) = Seq
 infixl 4 <*>.
 
 -- | Sequence two expressions, discarding the result of the first.
-(.>>.) :: PExp env t1 a
-       -> PExp env t2 b
-       -> PExp env (SeqTy t1 t2) b
+(.>>.) :: PExp s env t1 a
+       -> PExp s env t2 b
+       -> PExp s env (SeqTy t1 t2) b
 e1 .>>. e2 = Map (\_ b -> b) e1 <*>. e2
 infixl 6 .>>.
 
 -- | Infix ordered choice (@e1 \/ e2@): try @e1@; if it fails, try @e2@.
-(.||.) :: PExp env t1 a -> PExp env t2 a -> PExp env (ChoiceTy t1 t2) a
+(.||.) :: PExp s env t1 a -> PExp s env t2 a -> PExp s env (ChoiceTy t1 t2) a
 (.||.) = Choice
 infixl 5 .||.
 
 -- | Optional match: @opt e = (Just \<$\>. e) .||. pureP Nothing@.
-opt :: PExp env t a
-    -> PExp env (ChoiceTy t ('MkTy 'True '[])) (Maybe a)
+opt :: PExp s env t a
+    -> PExp s env (ChoiceTy t ('MkTy 'True '[])) (Maybe a)
 opt e = (Just <$>. e) .||. pureP Nothing
 
 -- | One-or-more: @plus e = (:) \<$\>. e \<*\>. Star e@.
-plus :: PExp env ('MkTy 'False f) a
-     -> PExp env (SeqTy ('MkTy 'False f) ('MkTy 'True f)) [a]
+--
+-- For a single character class, prefer 'spanOf1': it matches the whole run in
+-- one scan and returns a chunk of the stream instead of a list.
+plus :: PExp s env ('MkTy 'False f) a
+     -> PExp s env (SeqTy ('MkTy 'False f) ('MkTy 'True f)) [a]
 plus e = (:) <$>. e <*>. Star e
 
 -- | Match any character of the given set.
-sat :: CharSet -> PExp env ('MkTy 'False '[]) Char
+sat :: CharSet -> PExp s env ('MkTy 'False '[]) Char
 sat = Sat
 
 -- | Match any character inside one of the given inclusive ranges.
 -- This is the representation the quasi-quoter emits for @[a-z0-9]@ and
 -- friends.
-charClass :: [(Char, Char)] -> PExp env ('MkTy 'False '[]) Char
+charClass :: [(Char, Char)] -> PExp s env ('MkTy 'False '[]) Char
 charClass = Sat . CS.fromRanges
 
 -- | Match any character /outside/ the given inclusive ranges.
 -- The quasi-quoter emits this for @[^\"]@.
-notCharClass :: [(Char, Char)] -> PExp env ('MkTy 'False '[]) Char
+notCharClass :: [(Char, Char)] -> PExp s env ('MkTy 'False '[]) Char
 notCharClass = Sat . CS.notInRanges
 
+-- | Match the longest run of characters of the set, possibly empty.  The
+-- result is a chunk of the input stream.
+spanOf :: CharSet -> PExp s env ('MkTy 'True '[]) s
+spanOf = Span
+
+-- | Match a non-empty run of characters of the set.
+spanOf1 :: CharSet -> PExp s env ('MkTy 'False '[]) s
+spanOf1 = Span1
+
 -- | Match any character in the given list. The list must be non-empty.
-oneOf :: [Char] -> PExp env ('MkTy 'False '[]) Char
+oneOf :: [Char] -> PExp s env ('MkTy 'False '[]) Char
 oneOf []  = error "PEG.Syntax.oneOf: empty character class"
 oneOf [c] = Term c
 oneOf cs  = Sat (CS.fromList cs)
 
 -- | Match an exact string literal. The string must be non-empty.
-stringNE :: String -> PExp env ('MkTy 'False '[]) String
+stringNE :: String -> PExp s env ('MkTy 'False '[]) String
 stringNE [] = error "PEG.Syntax.stringNE: empty string"
 stringNE s  = Str s

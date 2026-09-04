@@ -73,17 +73,19 @@ infixl 3 </>
 p </> q = try p <|> q
 
 
-class Stream d where
+-- | Unrelated to "PEG.Stream": this is the reference semantics' own
+-- token-polymorphic input class, used only inside this module.
+class SimpleStream d where
   type Elem d
   anyChar :: PExp d (Elem d)
 
-instance Stream [a] where
+instance SimpleStream [a] where
   type Elem [a] = a 
   anyChar = PExp $ \s -> case s of
     (x:xs) -> Commit xs x
     [] -> Fail "EOF" False
 
-satisfy :: Stream d => (Elem d -> Bool) -> PExp d (Elem d)
+satisfy :: SimpleStream d => (Elem d -> Bool) -> PExp d (Elem d)
 satisfy p = try $ do
   x <- anyChar
   x <$ guard (p x)
@@ -101,10 +103,10 @@ not (PExp m)
         Fail{} -> Pure ()
         _      -> Fail "unexpected" False
 
-eof :: Stream d => PExp d ()
+eof :: SimpleStream d => PExp d ()
 eof = not anyChar
 
-char :: Eq (Elem d) => Stream d => Elem d -> PExp d (Elem d)
+char :: Eq (Elem d) => SimpleStream d => Elem d -> PExp d (Elem d)
 char c = satisfy (c ==)
 
 lexeme :: PExp String a -> PExp String a

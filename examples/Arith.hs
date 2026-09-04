@@ -58,7 +58,13 @@ type ArithEnv =
    , '("number", 'EnvEntry ('MkTy 'False '[])                           Exp)
    ]
 
-arith :: Grammar ArithEnv _ Exp
+-- | Polymorphic in the stream, so the same grammar can be run over 'String',
+-- 'Data.Text.Text' and 'Data.ByteString.ByteString'.  Note the cost: this is
+-- a function of a 'Stream' dictionary rather than a constant, so the compiled
+-- parser is not shared between calls.  Bind a monomorphic parser
+-- (@arithString = parse arith :: String -> Result String Exp@) where that
+-- matters.
+arith :: Stream s => Grammar s ArithEnv _ Exp
 arith =
   Grammar
     [pegRules|
@@ -68,6 +74,6 @@ arith =
        factor <- n:number
                / '(' e:expr ')'
                / '-' f:factor { Neg f }
-       number <- ds:[0-9]+ { Lit (read ds :: Int) }
+       number <- ds:[0-9]+ { Lit (read (chunkToString ds) :: Int) }
     |]
     (nt @"expr")

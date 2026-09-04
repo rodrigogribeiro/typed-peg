@@ -5,7 +5,7 @@ import Arith (arith, evalExp)
 import Layout (doExp, layoutOpts)
 import Compat (compatMain)
 
-showResult :: Show a => Result a -> String
+showResult :: Show a => Result String a -> String
 showResult (OK a _ _) = "OK " ++ show a
 showResult Fail        = "Fail"
 

@@ -12,6 +12,45 @@ looping at runtime.
 - Compile-time left-recursion detection (type error)
 - Indentation-sensitive parsing (`PEG.Indent`)
 - Quasi-quoter for concrete grammar syntax (`PEG.QQ`)
+- Parses any `PEG.Stream`: `String`, strict/lazy `Text`, strict/lazy
+  `ByteString`
+
+## Input streams
+
+A grammar is written once and runs over any stream:
+
+```haskell
+import qualified Data.Text as T
+
+parse arith "1+2*3"              -- Result String Exp
+parse arith (T.pack "1+2*3")     -- Result Text   Exp
+```
+
+Character classes produce a **chunk of the stream**, not a `[Char]`: matching
+`[a-z]+` against a `Text` yields a `Text` slice and copies nothing.  Semantic
+actions that want a `String` ask for one:
+
+```haskell
+number <- ds:[0-9]+   { Lit (read (chunkToString ds)) }
+strlit <- '"' cs:[^"]* '"'   { cs }     -- :: s, no copy
+```
+
+Only `unconsS` has no default, so adding a stream is one method.
+
+`ByteString` is read as Latin-1, like `Data.ByteString.Char8`: fast and
+correct for ASCII, wrong for multi-byte UTF-8.  Decode to `Text` if that
+matters.
+
+A `Grammar` is monomorphic in its stream.  To reuse one across several, give
+it a `forall s. Stream s => Grammar s Env _ A` signature — but note that makes
+it a function of a dictionary, so the compiled parser is no longer shared
+between calls.  Bind a monomorphic parser where that matters:
+
+```haskell
+arithString :: String -> Result String Exp
+arithString = parse arith
+{-# NOINLINE arithString #-}
+```
 
 ## Quick start
 
@@ -51,24 +90,28 @@ cabal bench
 instead of running criterion; allocation is the number that separates the two
 libraries most clearly once the algorithmic differences are gone.
 
-On GHC 9.10.3 against megaparsec 9.8.1, on the largest input of each group
-(mean of 100+ criterion samples, process pinned to one core):
+On GHC 9.10.3 against megaparsec 9.8.1, bytes allocated per input byte on the
+largest input of each group:
 
-| grammar | time vs. megaparsec `String` | bytes/input byte, typed-peg | megaparsec `String` |
-|---|---|---|---|
-| arithmetic | 0.99x | 990 | 1238 |
-| CSV | 1.01x | 834 | 1035 |
-| identifiers | 1.13x | 133 | 158 |
-| JSON | 1.07x | 459 | 782 |
-| nested parens | 0.99x | 265 | 1283 |
-| `'"' [^"]* '"'` | 1.23x | 113 | 128 |
-| `'"' (!'"' .)* '"'` | 2.15x | 162 | 128 |
+| grammar | typed-peg `String` | `Text` | `ByteString` | megaparsec `String` |
+|---|---|---|---|---|
+| arithmetic | 943 | 1127 | 969 | 1239 |
+| CSV | 787 | 951 | 805 | 1035 |
+| identifiers | 100 | 190 | 84 | 179 |
+| JSON | 404 | 583 | 452 | 782 |
+| nested parens | 312 | 481 | 336 | 1283 |
+| `'"' [^"]* '"'` | 90 | 167 | 65 | 128 |
+| `'"' (!'"' .)* '"'` | 209 | 320 | 250 | 128 |
 
-typed-peg is faster than megaparsec over `Text` on every benchmark here.  Time
-is the noisier of the two measurements: on a machine with heterogeneous cores,
-unpinned runs of the *same* megaparsec binary varied by up to 1.8x, so only the
-ratio taken within one run is meaningful.  Allocation is deterministic and
-reproduces exactly.
+`ByteString` is the cheapest column on five of the seven grammars and beats
+megaparsec on six.  `Text` costs more than `String` throughout — the same
+result the study found for megaparsec, so reach for it for interoperability
+rather than for speed.
+
+Allocation is deterministic and reproduces exactly.  Time is the noisier
+measurement: on a machine with heterogeneous cores, unpinned runs of the
+*same* megaparsec binary varied by up to 1.8x, so only the ratio taken within
+one run is meaningful.
 
 The reference implementation is `Bench.Peg`; its megaparsec twin is
 `Bench.Mega`.  Since PEG ordered choice backtracks unconditionally while

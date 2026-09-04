@@ -2,6 +2,79 @@
 
 ## Unreleased
 
+### Added — parsing any stream, not just `String`
+
+`PEG.Stream` introduces a `Stream` class, with instances for `String`, strict
+and lazy `Data.Text.Text`, and strict and lazy `Data.ByteString.ByteString`.
+A grammar written once runs over any of them.
+
+The genericity reaches the *results*, not just the input: a character-class
+repetition such as `cs:[a-zA-Z0-9_]+` now produces a **chunk of the input
+stream** — a real `Text` slice — instead of unpacking into a `[Char]`.  Two new
+`PExp` constructors, `Span` and `Span1`, carry this; the quasi-quoter emits
+them for `[...]*`, `[...]+`, `'c'*`, `'c'+`, `.*` and `.+`.
+
+`ByteString` is read as Latin-1, exactly as `Data.ByteString.Char8` does: fast,
+correct for ASCII, and wrong for multi-byte UTF-8.  `PEG.Stream`'s Haddock
+states this as a law rather than a footnote.
+
+Only `unconsS` has no default, so a user instance is one method.  It returns an
+unboxed sum rather than `Maybe (Char, s)` on purpose — behind a class
+dictionary the boxed version would allocate a `Just` and a pair for every
+character, losing the zero-allocation terminal path.
+
+### Changed
+
+- **Breaking.** `PExp`, `Rules` and `Grammar` take a leading stream parameter:
+  `PExp s env ty a`, `Rules s env defs`, `Grammar s env ty a`.  `Result` and
+  `PState` likewise: `Result s a`, `PState s`.
+- **Breaking.** A rule whose result is a character-class repetition now has
+  result type `s`, so its `Env` synonym takes a parameter.  Semantic actions
+  that fed such a result to something expecting a `String` need
+  `chunkToString`: `number <- ds:[0-9]+ { Lit (read (chunkToString ds)) }`.
+- **Breaking.** The symbol variable in `PExp`'s `NT`, in `nt`, and in
+  `Rules`'s `RCons` is now named `n`; `s` is the stream.  `nt @"name"` is
+  unaffected — the name is deliberately still the first quantified variable.
+- `PEG.Semantics.Simple`'s unrelated `Stream` class is renamed
+  `SimpleStream`, to leave the name to `PEG.Stream`.
+- `PState`'s input field is now strict.
+
+A `Grammar` is monomorphic in its stream.  Reusing one across stream types
+needs a `forall s. Stream s => Grammar s env ty a` signature, which turns the
+value into a function of a dictionary and so stops the compiled parser being
+shared between calls.  Give parsers a monomorphic top-level binding where that
+matters; `PEG.Parse`'s Haddock spells this out.
+
+### Performance
+
+Measured on the benchmark suite, bytes allocated per input byte, against the
+previous release of the evaluator:
+
+| grammar | before (String) | String | Text | ByteString | megaparsec |
+|---|---|---|---|---|---|
+| arith  | 990 | 943 | 1127 |  969 | 1239 |
+| csv    | 834 | 787 |  951 |  805 | 1035 |
+| json   | 459 | 404 |  583 |  452 |  782 |
+| nested | 265 | 312 |  481 |  336 | 1283 |
+| quoted `(!'"' .)*` | 162 | 209 | 320 | 250 | 128 |
+
+`ByteString` is the cheapest column on five of the seven grammars and beats
+megaparsec on six.  `Text` costs more than `String` throughout — the same
+result the earlier study found for megaparsec, and worth knowing before
+reaching for it.
+
+Two grammars regressed on `String` (`nested` +18%, the `(!'"' .)*` idiom
++29%).  Both are dominated by single-character steps rather than bulk scans,
+where `unconsS` is one indirect call that the previous direct cons-cell match
+did not need.  The five grammars that do any bulk scanning improved by 5-12%.
+
+The `idents` and `quoted [^"]*` groups are not in the table because their
+grammars changed: `ident` moved from `c:[a-zA-Z_] cs:[a-zA-Z0-9_]*` to
+`&[a-zA-Z_] cs:[a-zA-Z0-9_]+` so that it returns a chunk rather than consing a
+character onto one, and `Bench.Mega`'s `identP` moved to `takeWhile1P` to keep
+the comparison like-for-like.  On the new grammars typed-peg allocates 100
+B/byte over `String` and 84 over `ByteString`, against megaparsec's 179.
+
 ### Performance
 
 The evaluator was rewritten twice: once around a compilation step, once around

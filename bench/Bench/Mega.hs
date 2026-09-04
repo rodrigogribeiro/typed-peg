@@ -24,6 +24,7 @@ module Bench.Mega
   ) where
 
 import Data.Char             (isAlphaNum, isAlpha, isDigit)
+import Data.Proxy            (Proxy (..))
 import Data.String           (IsString)
 import Data.Void             (Void)
 import Text.Megaparsec
@@ -81,11 +82,15 @@ natP = read <$> some (satisfy isDigit)
 -- Identifier list
 --------------------------------------------------------------------------------
 
-identsP :: Str s => P s [String]
+identsP :: Str s => P s [Tokens s]
 identsP = (:) <$> identP <*> many (try (char ' ' *> identP))
 
-identP :: Str s => P s String
-identP = (:) <$> satisfy startC <*> many (satisfy contC)
+-- Both sides use their bulk primitive: typed-peg spans the class into a chunk
+-- of the stream, megaparsec into a 'Tokens'.  A lookahead pins the first
+-- character to the narrower class without consuming it, exactly as
+-- @&[a-zA-Z_] [a-zA-Z0-9_]+@ does on the typed-peg side.
+identP :: Str s => P s (Tokens s)
+identP = lookAhead (satisfy startC) *> takeWhile1P Nothing contC
   where
     startC c = isAlpha c || c == '_'
     contC  c = isAlphaNum c || c == '_'
@@ -168,8 +173,8 @@ runArith = run exprP evalExp "runArith"
 runCsv :: Str s => s -> Int
 runCsv = run csvP (sum . map sum) "runCsv"
 
-runIdents :: Str s => s -> Int
-runIdents = run identsP (sum . map length) "runIdents"
+runIdents :: forall s. Str s => s -> Int
+runIdents = run identsP (sum . map (chunkLength (Proxy :: Proxy s))) "runIdents"
 
 runJson :: Str s => s -> Int
 runJson = run jsonP sizeJ "runJson"

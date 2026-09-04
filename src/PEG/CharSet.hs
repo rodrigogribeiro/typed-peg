@@ -18,6 +18,7 @@ module PEG.CharSet
   , singletonCS
   , complementCS
   , nullCS
+  , anyCS
   ) where
 
 import Data.Bits (setBit, testBit)
@@ -93,6 +94,10 @@ fromList cs = fromRanges [ (c, c) | c <- cs ]
 -- | The set containing exactly one character.
 singletonCS :: Char -> CharSet
 singletonCS c = fromRanges [(c, c)]
+
+-- | The set of every character.  This is what @.*@ compiles to.
+anyCS :: CharSet
+anyCS = notInRanges []
 
 -- | Is the set empty?
 nullCS :: CharSet -> Bool

@@ -375,6 +375,21 @@ translateExpr (ENot e)  = do
 translateExpr (EOpt e)  = do
   e' <- translateExpr e
   [| opt $(pure e') |]
+-- A repetition of a single character -- @[a-z]*@, @','+@, @.*@ -- compiles to
+-- one 'PEG.Syntax.Span' node and produces a /chunk of the input stream/: a
+-- 'Data.Text.Text' slice rather than a @['Char']@.  Only a bare class, literal
+-- or dot qualifies; a wrapper such as @[a-z]^>*@ changes the meaning of each
+-- iteration, so those keep the generic 'Star'.
+translateExpr (EStar (EClass neg rs))
+  | neg       = [| spanOf (notInRanges rs) |]
+  | otherwise = [| spanOf (fromRanges rs) |]
+translateExpr (EStar (EChar c)) = [| spanOf (singletonCS c) |]
+translateExpr (EStar EDot)      = [| spanOf anyCS |]
+translateExpr (EPlus (EClass neg rs))
+  | neg       = [| spanOf1 (notInRanges rs) |]
+  | otherwise = [| spanOf1 (fromRanges rs) |]
+translateExpr (EPlus (EChar c)) = [| spanOf1 (singletonCS c) |]
+translateExpr (EPlus EDot)      = [| spanOf1 anyCS |]
 translateExpr (EStar e) = do
   e' <- translateExpr e
   [| Star $(pure e') |]

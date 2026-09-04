@@ -1,0 +1,25 @@
+bytes allocated per input byte
+                          peg/Str  peg/Txt   peg/BS mega/Str mega/Txt
+arith [308B]               1066.6   1140.6    981.6   1243.9   1502.9
+arith [1230B]               941.2   1124.9    966.6   1239.1   1497.1
+arith [4897B]               943.3   1127.3    968.8   1239.0   1499.9
+csv [1105B]                 789.3    953.5    807.8   1035.4   1262.4
+csv [5517B]                 786.6    950.6    805.1   1034.4   1261.8
+csv [22043B]                786.8    950.9    805.4   1034.7   1262.1
+idents [799B]               118.0    194.3     88.1    181.5    264.2
+idents [3999B]              100.3    190.3     84.3    179.4    262.3
+idents [15999B]             100.1    190.1     84.1    179.1    262.1
+json [811B]                 420.1    598.8    466.7    802.2   1197.4
+json [4062B]                404.3    583.3    452.4    783.1   1172.9
+json [16257B]               403.9    582.9    452.0    782.1   1170.8
+nested [101B]               347.7    518.1    372.8   1430.7   1881.6
+nested [401B]               312.0    480.6    336.3   1282.8   1724.5
+quoted-lookahead [749B]     212.6    322.8    259.6    130.3    341.5
+quoted-lookahead [2999B]    208.5    319.6    250.1    128.0    339.2
+quoted-class [749B]          99.8    170.0     68.9    129.5    340.7
+quoted-class [2999B]         90.0    167.0     65.0    128.0    339.2
+
+NOTE: the `idents` and `quoted-*` grammars changed with the Stream work, so
+their columns are NOT comparable with alloc-v2-unboxed.txt.  `ident` moved
+from `c:[a-zA-Z_] cs:[a-zA-Z0-9_]*` to `&[a-zA-Z_] cs:[a-zA-Z0-9_]+`, and
+Bench.Mega's identP moved to takeWhile1P to match.

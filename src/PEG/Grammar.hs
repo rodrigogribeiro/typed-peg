@@ -29,14 +29,15 @@ import PEG.Type
 
 -- | A typed, heterogeneous list of named grammar rules.
 --
--- @'Rules' env defs@ is a list of rules whose bodies reference non-terminals
--- in @env@ and whose definitions together form @defs@.
-data Rules (env :: Env) (defs :: Env) where
-  RNil  :: Rules env '[]
-  RCons :: Name s
-        -> PExp env ty a
-        -> Rules env rest
-        -> Rules env ('(s, 'EnvEntry ty a) ': rest)
+-- @'Rules' s env defs@ is a list of rules over the stream @s@ whose bodies
+-- reference non-terminals in @env@ and whose definitions together form
+-- @defs@.
+data Rules (s :: Type) (env :: Env) (defs :: Env) where
+  RNil  :: Rules s env '[]
+  RCons :: Name n
+        -> PExp s env ty a
+        -> Rules s env rest
+        -> Rules s env ('(n, 'EnvEntry ty a) ': rest)
 
 type family Acyclic (env :: Env) :: Constraint where
   Acyclic '[]                             = ()
@@ -51,13 +52,20 @@ type family NotLeftRec (s :: Symbol) (b :: Bool) (ty :: Ty) :: Constraint where
                ':<>: 'ShowType (First ty)
          ':$$: 'Text "Violates the acyclicity condition i `notElem` Gamma(i).F.")
 
--- | A complete PEG grammar: a set of mutually recursive rules and a start
--- expression.
+-- | A complete PEG grammar over the stream @s@: a set of mutually recursive
+-- rules and a start expression.
+--
+-- A 'Grammar' is monomorphic in its stream.  To reuse one grammar across
+-- several stream types, give it a signature of the form
+-- @forall s. 'PEG.Stream.Stream' s => Grammar s Env ty a@ — but note that
+-- doing so turns the value into a function of a dictionary, so the compiled
+-- parser is no longer shared between calls.  Prefer a monomorphic top-level
+-- signature.
 --
 -- Constructing a 'Grammar' value discharges the 'Acyclic' constraint, so
 -- any left-recursion in @env@ becomes a compile-time type error.
-data Grammar (env :: Env) (startTy :: Ty) (startA :: Type) where
+data Grammar (s :: Type) (env :: Env) (startTy :: Ty) (startA :: Type) where
   Grammar :: Acyclic env
-          => Rules env env
-          -> PExp env startTy startA
-          -> Grammar env startTy startA
+          => Rules s env env
+          -> PExp s env startTy startA
+          -> Grammar s env startTy startA
