@@ -23,6 +23,9 @@ module PEG.Syntax
   ( Name (..)
   , PExp (..)
   , nt
+  , sat
+  , charClass
+  , notCharClass
   , pureP
   , fmapP
   , indent
@@ -44,6 +47,8 @@ module PEG.Syntax
 import Data.Kind    (Type)
 import GHC.TypeLits (Symbol, KnownSymbol)
 
+import PEG.CharSet (CharSet)
+import qualified PEG.CharSet as CS
 import PEG.Indent (Rel)
 import PEG.Type
 import PEG.TyLevel
@@ -73,6 +78,8 @@ type NTTy s env =
 --
 -- * 'Pure'   — succeed without consuming input, return a value
 -- * 'Term'   — match a specific character
+-- * 'Sat'    — match any character of a 'CharSet' (a character class)
+-- * 'Str'    — match a non-empty string literal
 -- * 'AnyChar'— match any character
 -- * 'NT'     — invoke a named non-terminal
 -- * 'Seq'    — sequential composition (@e1 e2@)
@@ -86,6 +93,13 @@ type NTTy s env =
 data PExp (env :: Env) (ty :: Ty) (a :: Type) where
   Pure     :: a -> PExp env ('MkTy 'True '[]) a
   Term     :: Char -> PExp env ('MkTy 'False '[]) Char
+  -- | Match one character of a class.  This is what character classes such as
+  -- @[a-zA-Z0-9_]@ compile to: a single bit test instead of a chain of
+  -- ordered choices.
+  Sat      :: !CharSet -> PExp env ('MkTy 'False '[]) Char
+  -- | Match a string literal.  The string must be non-empty (the 'Ty' index
+  -- claims the expression is not nullable); use 'pureP' @""@ otherwise.
+  Str      :: String -> PExp env ('MkTy 'False '[]) String
   AnyChar  :: PExp env ('MkTy 'False '[]) Char
   NT       :: ( KnownSymbol s
               , KnownMember s env (TyOf (Lookup s env)) (ResOf (Lookup s env))
@@ -180,14 +194,28 @@ plus :: PExp env ('MkTy 'False f) a
      -> PExp env (SeqTy ('MkTy 'False f) ('MkTy 'True f)) [a]
 plus e = (:) <$>. e <*>. Star e
 
+-- | Match any character of the given set.
+sat :: CharSet -> PExp env ('MkTy 'False '[]) Char
+sat = Sat
+
+-- | Match any character inside one of the given inclusive ranges.
+-- This is the representation the quasi-quoter emits for @[a-z0-9]@ and
+-- friends.
+charClass :: [(Char, Char)] -> PExp env ('MkTy 'False '[]) Char
+charClass = Sat . CS.fromRanges
+
+-- | Match any character /outside/ the given inclusive ranges.
+-- The quasi-quoter emits this for @[^\"]@.
+notCharClass :: [(Char, Char)] -> PExp env ('MkTy 'False '[]) Char
+notCharClass = Sat . CS.notInRanges
+
 -- | Match any character in the given list. The list must be non-empty.
 oneOf :: [Char] -> PExp env ('MkTy 'False '[]) Char
-oneOf []     = error "PEG.Syntax.oneOf: empty character class"
-oneOf [c]    = Term c
-oneOf (c:cs) = Term c .||. oneOf cs
+oneOf []  = error "PEG.Syntax.oneOf: empty character class"
+oneOf [c] = Term c
+oneOf cs  = Sat (CS.fromList cs)
 
 -- | Match an exact string literal. The string must be non-empty.
 stringNE :: String -> PExp env ('MkTy 'False '[]) String
-stringNE []     = error "PEG.Syntax.stringNE: empty string"
-stringNE [c]    = (\x -> [x]) <$>. Term c
-stringNE (c:cs) = (:) <$>. Term c <*>. stringNE cs
+stringNE [] = error "PEG.Syntax.stringNE: empty string"
+stringNE s  = Str s

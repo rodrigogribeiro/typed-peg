@@ -15,7 +15,12 @@
 -- a Haskell action in braces: @{ haskellExpr }@.
 -- Ordered choice is written with @\/@; Kleene star with @*@; plus with @+@;
 -- optional with @?@; negation with @!@.
--- Character classes use @[...]@ syntax.
+--
+-- Character classes use @[...]@ syntax and may contain ranges: @[a-zA-Z0-9_]@.
+-- A leading @^@ negates the class, so @[^\"]@ matches any character other than
+-- a double quote; write @[\\^]@ for a class containing a caret.  Prefer a
+-- negated class over the @(!c .)@ idiom: the class is one bit test, whereas
+-- the lookahead scans every character twice.
 --
 -- The 'pegExpr' quasi-quoter produces a single 'PEG.Syntax.PExp' value,
 -- while 'pegRules' produces a complete set of named rules (a
@@ -50,7 +55,7 @@ data PExpr
   | EPlus    PExpr
   | EChar    Char
   | EString  String
-  | EClass   [(Char,Char)]
+  | EClass   Bool [(Char,Char)]   -- ^ 'True' when the class is negated.
   | EDot
   | ENT      String
   | EIndent  RelS PExpr
@@ -127,16 +132,26 @@ escChar _ ('\\':e:xs) = case e of
   '['  -> Right ('[',  xs)
   ']'  -> Right (']',  xs)
   '0'  -> Right ('\0', xs)
+  '^'  -> Right ('^',  xs)
   _    -> errorAt ("unknown escape \\" ++ [e]) xs
 escChar stopC (c:xs)
   | c == stopC = errorAt "unexpected close quote" (c:xs)
   | otherwise  = Right (c, xs)
 escChar _ [] = Left "unexpected end of input in literal"
 
-classLit :: P [(Char, Char)]
+-- | A character class.  A leading @^@ negates it, as in POSIX; write
+-- @[\\^]@ for a class containing the caret itself.
+classLit :: P (Bool, [(Char, Char)])
 classLit s0 = case spaces s0 of
-  ('[':xs) -> loop xs
-  s        -> errorAt "expected character class" s
+  ('[':'^':xs) -> do
+    (rs, r) <- loop xs
+    if null rs
+      then errorAt "empty negated character class" s0
+      else Right ((True, rs), r)
+  ('[':xs)     -> do
+    (rs, r) <- loop xs
+    Right ((False, rs), r)
+  s            -> errorAt "expected character class" s
   where
     loop (']':r) = Right ([], r)
     loop []      = Left "unterminated character class"
@@ -302,7 +317,7 @@ parsePrimary s =
         Left _ -> case strLit s of
           Right (cs, s1) -> Right (EString cs, s1)
           Left _ -> case classLit s of
-            Right (rs, s1) -> Right (EClass rs, s1)
+            Right ((neg, rs), s1) -> Right (EClass neg rs, s1)
             Left _ -> case ident s of
               Right (name, s1) ->
                 case tok "<-" s1 of
@@ -344,9 +359,13 @@ translateExpr (ENT name) =
 translateExpr (EString s)
   | null s    = [| pureP "" |]
   | otherwise = [| stringNE s |]
-translateExpr (EClass rs) =
-  let allChars = concat [ [lo..hi] | (lo, hi) <- rs ]
-  in [| oneOf allChars |]
+translateExpr (EClass neg rs)
+  -- A character class becomes a single 'Sat' node holding a compact
+  -- 'PEG.CharSet.CharSet'.  Expanding it into a chain of ordered choices, as
+  -- an earlier version did, made matching one character of @[a-zA-Z0-9_]@
+  -- cost 63 parser steps.
+  | neg       = [| notCharClass rs |]
+  | otherwise = [| charClass rs |]
 translateExpr (EAnd e)  = do
   e' <- translateExpr e
   [| Not (Not $(pure e')) |]

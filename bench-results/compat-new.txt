@@ -1,0 +1,265 @@
+Resolving dependencies...
+Build profile: -w ghc-9.10.3 -O1
+In order, the following will be built (use -v for more details):
+ - typed-peg-0.1.0.0 (lib) (configuration changed)
+ - typed-peg-0.1.0.0 (test:typed-peg-examples) (configuration changed)
+Configuring library for typed-peg-0.1.0.0...
+Preprocessing library for typed-peg-0.1.0.0...
+Building library for typed-peg-0.1.0.0...
+[ 2 of 12] Compiling PEG.Indent       ( src/PEG/Indent.hs, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/build/PEG/Indent.o, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/build/PEG/Indent.dyn_o ) [Source file changed]
+[ 8 of 12] Compiling PEG.Syntax       ( src/PEG/Syntax.hs, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/build/PEG/Syntax.o, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/build/PEG/Syntax.dyn_o ) [Source file changed]
+[ 9 of 12] Compiling PEG.Grammar      ( src/PEG/Grammar.hs, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/build/PEG/Grammar.o, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/build/PEG/Grammar.dyn_o ) [PEG.Syntax changed]
+[10 of 12] Compiling PEG.Parse        ( src/PEG/Parse.hs, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/build/PEG/Parse.o, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/build/PEG/Parse.dyn_o ) [Source file changed]
+[11 of 12] Compiling PEG              ( src/PEG.hs, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/build/PEG.o, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/build/PEG.dyn_o ) [Source file changed]
+[12 of 12] Compiling PEG.QQ           ( src/PEG/QQ.hs, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/build/PEG/QQ.o, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/build/PEG/QQ.dyn_o ) [Source file changed]
+Configuring test suite 'typed-peg-examples' for typed-peg-0.1.0.0...
+Preprocessing test suite 'typed-peg-examples' for typed-peg-0.1.0.0...
+Building test suite 'typed-peg-examples' for typed-peg-0.1.0.0...
+[1 of 4] Compiling Arith            ( examples/Arith.hs, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/t/typed-peg-examples/build/typed-peg-examples/typed-peg-examples-tmp/Arith.o ) [PEG changed]
+[2 of 4] Compiling Layout           ( examples/Layout.hs, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/t/typed-peg-examples/build/typed-peg-examples/typed-peg-examples-tmp/Layout.o ) [PEG changed]
+[3 of 4] Compiling Compat           ( examples/Compat.hs, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/t/typed-peg-examples/build/typed-peg-examples/typed-peg-examples-tmp/Compat.o )
+[4 of 4] Compiling Main             ( examples/Main.hs, dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/t/typed-peg-examples/build/typed-peg-examples/typed-peg-examples-tmp/Main.o ) [Source file changed]
+[5 of 5] Linking dist-newstyle/build/x86_64-linux/ghc-9.10.3/typed-peg-0.1.0.0/t/typed-peg-examples/build/typed-peg-examples/typed-peg-examples [Objects changed]
+=== Arith ===
+1+2*3 => OK 7
+(1+2)*3 => OK 9
+42 => OK 42
+
+=== Layout (do-notation) ===
+Fail
+
+=== Differential battery ===
+### arith (defaultOpts)
+"1+2*3" => OK Add (Lit 1) (Mul (Lit 2) (Lit 3)) consumed="1+2*3" rest=""
+"(1+2)*3" => OK Mul (Add (Lit 1) (Lit 2)) (Lit 3) consumed="(1+2)*3" rest=""
+"42" => OK Lit 42 consumed="42" rest=""
+"-7" => OK Neg (Lit 7) consumed="-7" rest=""
+"1+" => OK Lit 1 consumed="1" rest="+"
+"" => Fail
+"((((1))))" => OK Lit 1 consumed="((((1))))" rest=""
+"1+2)rest" => OK Add (Lit 1) (Lit 2) consumed="1+2" rest=")rest"
+"12*34/5-6" => OK Sub (Div (Mul (Lit 12) (Lit 34)) (Lit 5)) (Lit 6) consumed="12*34/5-6" rest=""
+"9" => OK Lit 9 consumed="9" rest=""
+"1+2*3+4*5+6/7-8" => OK Sub (Add (Add (Add (Lit 1) (Mul (Lit 2) (Lit 3))) (Mul (Lit 4) (Lit 5))) (Div (Lit 6) (Lit 7))) (Lit 8) consumed="1+2*3+4*5+6/7-8" rest=""
+"(((1+2)*(3+4))-(5*6))" => OK Sub (Mul (Add (Lit 1) (Lit 2)) (Add (Lit 3) (Lit 4))) (Mul (Lit 5) (Lit 6)) consumed="(((1+2)*(3+4))-(5*6))" rest=""
+"0000123" => OK Lit 123 consumed="0000123" rest=""
+"1--2" => OK Sub (Lit 1) (Neg (Lit 2)) consumed="1--2" rest=""
+"-(1+2)" => OK Neg (Add (Lit 1) (Lit 2)) consumed="-(1+2)" rest=""
+### arith (varying Opts)
+layout(ge,tab8) "1+2*3" => OK Add (Lit 1) (Mul (Lit 2) (Lit 3)) consumed="1+2*3" rest=""
+layout(ge,tab8) "(1+2)*3" => OK Mul (Add (Lit 1) (Lit 2)) (Lit 3) consumed="(1+2)*3" rest=""
+layout(ge,tab8) "42" => OK Lit 42 consumed="42" rest=""
+layout(ge,tab8) "-7" => OK Neg (Lit 7) consumed="-7" rest=""
+layout(ge,tab8) "1+" => OK Lit 1 consumed="1" rest="+"
+layout(ge,tab8) "" => Fail
+layout(ge,tab8) "((((1))))" => OK Lit 1 consumed="((((1))))" rest=""
+layout(ge,tab8) "1+2)rest" => OK Add (Lit 1) (Lit 2) consumed="1+2" rest=")rest"
+layout(ge,tab8) "12*34/5-6" => OK Sub (Div (Mul (Lit 12) (Lit 34)) (Lit 5)) (Lit 6) consumed="12*34/5-6" rest=""
+layout(ge,tab8) "9" => OK Lit 9 consumed="9" rest=""
+layout(ge,tab8) "1+2*3+4*5+6/7-8" => OK Sub (Add (Add (Add (Lit 1) (Mul (Lit 2) (Lit 3))) (Mul (Lit 4) (Lit 5))) (Div (Lit 6) (Lit 7))) (Lit 8) consumed="1+2*3+4*5+6/7-8" rest=""
+layout(ge,tab8) "(((1+2)*(3+4))-(5*6))" => OK Sub (Mul (Add (Lit 1) (Lit 2)) (Add (Lit 3) (Lit 4))) (Mul (Lit 5) (Lit 6)) consumed="(((1+2)*(3+4))-(5*6))" rest=""
+layout(ge,tab8) "0000123" => OK Lit 123 consumed="0000123" rest=""
+layout(ge,tab8) "1--2" => OK Sub (Lit 1) (Neg (Lit 2)) consumed="1--2" rest=""
+layout(ge,tab8) "-(1+2)" => OK Neg (Add (Lit 1) (Lit 2)) consumed="-(1+2)" rest=""
+layout(ge,tab4) "1+2*3" => OK Add (Lit 1) (Mul (Lit 2) (Lit 3)) consumed="1+2*3" rest=""
+layout(ge,tab4) "(1+2)*3" => OK Mul (Add (Lit 1) (Lit 2)) (Lit 3) consumed="(1+2)*3" rest=""
+layout(ge,tab4) "42" => OK Lit 42 consumed="42" rest=""
+layout(ge,tab4) "-7" => OK Neg (Lit 7) consumed="-7" rest=""
+layout(ge,tab4) "1+" => OK Lit 1 consumed="1" rest="+"
+layout(ge,tab4) "" => Fail
+layout(ge,tab4) "((((1))))" => OK Lit 1 consumed="((((1))))" rest=""
+layout(ge,tab4) "1+2)rest" => OK Add (Lit 1) (Lit 2) consumed="1+2" rest=")rest"
+layout(ge,tab4) "12*34/5-6" => OK Sub (Div (Mul (Lit 12) (Lit 34)) (Lit 5)) (Lit 6) consumed="12*34/5-6" rest=""
+layout(ge,tab4) "9" => OK Lit 9 consumed="9" rest=""
+layout(ge,tab4) "1+2*3+4*5+6/7-8" => OK Sub (Add (Add (Add (Lit 1) (Mul (Lit 2) (Lit 3))) (Mul (Lit 4) (Lit 5))) (Div (Lit 6) (Lit 7))) (Lit 8) consumed="1+2*3+4*5+6/7-8" rest=""
+layout(ge,tab4) "(((1+2)*(3+4))-(5*6))" => OK Sub (Mul (Add (Lit 1) (Lit 2)) (Add (Lit 3) (Lit 4))) (Mul (Lit 5) (Lit 6)) consumed="(((1+2)*(3+4))-(5*6))" rest=""
+layout(ge,tab4) "0000123" => OK Lit 123 consumed="0000123" rest=""
+layout(ge,tab4) "1--2" => OK Sub (Lit 1) (Neg (Lit 2)) consumed="1--2" rest=""
+layout(ge,tab4) "-(1+2)" => OK Neg (Add (Lit 1) (Lit 2)) consumed="-(1+2)" rest=""
+layout(ge,tab1) "1+2*3" => OK Add (Lit 1) (Mul (Lit 2) (Lit 3)) consumed="1+2*3" rest=""
+layout(ge,tab1) "(1+2)*3" => OK Mul (Add (Lit 1) (Lit 2)) (Lit 3) consumed="(1+2)*3" rest=""
+layout(ge,tab1) "42" => OK Lit 42 consumed="42" rest=""
+layout(ge,tab1) "-7" => OK Neg (Lit 7) consumed="-7" rest=""
+layout(ge,tab1) "1+" => OK Lit 1 consumed="1" rest="+"
+layout(ge,tab1) "" => Fail
+layout(ge,tab1) "((((1))))" => OK Lit 1 consumed="((((1))))" rest=""
+layout(ge,tab1) "1+2)rest" => OK Add (Lit 1) (Lit 2) consumed="1+2" rest=")rest"
+layout(ge,tab1) "12*34/5-6" => OK Sub (Div (Mul (Lit 12) (Lit 34)) (Lit 5)) (Lit 6) consumed="12*34/5-6" rest=""
+layout(ge,tab1) "9" => OK Lit 9 consumed="9" rest=""
+layout(ge,tab1) "1+2*3+4*5+6/7-8" => OK Sub (Add (Add (Add (Lit 1) (Mul (Lit 2) (Lit 3))) (Mul (Lit 4) (Lit 5))) (Div (Lit 6) (Lit 7))) (Lit 8) consumed="1+2*3+4*5+6/7-8" rest=""
+layout(ge,tab1) "(((1+2)*(3+4))-(5*6))" => OK Sub (Mul (Add (Lit 1) (Lit 2)) (Add (Lit 3) (Lit 4))) (Mul (Lit 5) (Lit 6)) consumed="(((1+2)*(3+4))-(5*6))" rest=""
+layout(ge,tab1) "0000123" => OK Lit 123 consumed="0000123" rest=""
+layout(ge,tab1) "1--2" => OK Sub (Lit 1) (Neg (Lit 2)) consumed="1--2" rest=""
+layout(ge,tab1) "-(1+2)" => OK Neg (Add (Lit 1) (Lit 2)) consumed="-(1+2)" rest=""
+layout(gt) "1+2*3" => Fail
+layout(gt) "(1+2)*3" => Fail
+layout(gt) "42" => Fail
+layout(gt) "-7" => Fail
+layout(gt) "1+" => Fail
+layout(gt) "" => Fail
+layout(gt) "((((1))))" => Fail
+layout(gt) "1+2)rest" => Fail
+layout(gt) "12*34/5-6" => Fail
+layout(gt) "9" => Fail
+layout(gt) "1+2*3+4*5+6/7-8" => Fail
+layout(gt) "(((1+2)*(3+4))-(5*6))" => Fail
+layout(gt) "0000123" => Fail
+layout(gt) "1--2" => Fail
+layout(gt) "-(1+2)" => Fail
+layout(eq) "1+2*3" => OK Lit 1 consumed="1" rest="+2*3"
+layout(eq) "(1+2)*3" => Fail
+layout(eq) "42" => OK Lit 4 consumed="4" rest="2"
+layout(eq) "-7" => Fail
+layout(eq) "1+" => OK Lit 1 consumed="1" rest="+"
+layout(eq) "" => Fail
+layout(eq) "((((1))))" => Fail
+layout(eq) "1+2)rest" => OK Lit 1 consumed="1" rest="+2)rest"
+layout(eq) "12*34/5-6" => OK Lit 1 consumed="1" rest="2*34/5-6"
+layout(eq) "9" => OK Lit 9 consumed="9" rest=""
+layout(eq) "1+2*3+4*5+6/7-8" => OK Lit 1 consumed="1" rest="+2*3+4*5+6/7-8"
+layout(eq) "(((1+2)*(3+4))-(5*6))" => Fail
+layout(eq) "0000123" => OK Lit 0 consumed="0" rest="000123"
+layout(eq) "1--2" => OK Lit 1 consumed="1" rest="--2"
+layout(eq) "-(1+2)" => Fail
+layout(any) "1+2*3" => OK Add (Lit 1) (Mul (Lit 2) (Lit 3)) consumed="1+2*3" rest=""
+layout(any) "(1+2)*3" => OK Mul (Add (Lit 1) (Lit 2)) (Lit 3) consumed="(1+2)*3" rest=""
+layout(any) "42" => OK Lit 42 consumed="42" rest=""
+layout(any) "-7" => OK Neg (Lit 7) consumed="-7" rest=""
+layout(any) "1+" => OK Lit 1 consumed="1" rest="+"
+layout(any) "" => Fail
+layout(any) "((((1))))" => OK Lit 1 consumed="((((1))))" rest=""
+layout(any) "1+2)rest" => OK Add (Lit 1) (Lit 2) consumed="1+2" rest=")rest"
+layout(any) "12*34/5-6" => OK Sub (Div (Mul (Lit 12) (Lit 34)) (Lit 5)) (Lit 6) consumed="12*34/5-6" rest=""
+layout(any) "9" => OK Lit 9 consumed="9" rest=""
+layout(any) "1+2*3+4*5+6/7-8" => OK Sub (Add (Add (Add (Lit 1) (Mul (Lit 2) (Lit 3))) (Mul (Lit 4) (Lit 5))) (Div (Lit 6) (Lit 7))) (Lit 8) consumed="1+2*3+4*5+6/7-8" rest=""
+layout(any) "(((1+2)*(3+4))-(5*6))" => OK Sub (Mul (Add (Lit 1) (Lit 2)) (Add (Lit 3) (Lit 4))) (Mul (Lit 5) (Lit 6)) consumed="(((1+2)*(3+4))-(5*6))" rest=""
+layout(any) "0000123" => OK Lit 123 consumed="0000123" rest=""
+layout(any) "1--2" => OK Sub (Lit 1) (Neg (Lit 2)) consumed="1--2" rest=""
+layout(any) "-(1+2)" => OK Neg (Add (Lit 1) (Lit 2)) consumed="-(1+2)" rest=""
+layout(off2) "1+2*3" => Fail
+layout(off2) "(1+2)*3" => Fail
+layout(off2) "42" => Fail
+layout(off2) "-7" => Fail
+layout(off2) "1+" => Fail
+layout(off2) "" => Fail
+layout(off2) "((((1))))" => Fail
+layout(off2) "1+2)rest" => Fail
+layout(off2) "12*34/5-6" => Fail
+layout(off2) "9" => Fail
+layout(off2) "1+2*3+4*5+6/7-8" => Fail
+layout(off2) "(((1+2)*(3+4))-(5*6))" => Fail
+layout(off2) "0000123" => Fail
+layout(off2) "1--2" => Fail
+layout(off2) "-(1+2)" => Fail
+layout(cands) "1+2*3" => Fail
+layout(cands) "(1+2)*3" => Fail
+layout(cands) "42" => Fail
+layout(cands) "-7" => Fail
+layout(cands) "1+" => Fail
+layout(cands) "" => Fail
+layout(cands) "((((1))))" => Fail
+layout(cands) "1+2)rest" => Fail
+layout(cands) "12*34/5-6" => Fail
+layout(cands) "9" => Fail
+layout(cands) "1+2*3+4*5+6/7-8" => Fail
+layout(cands) "(((1+2)*(3+4))-(5*6))" => Fail
+layout(cands) "0000123" => Fail
+layout(cands) "1--2" => Fail
+layout(cands) "-(1+2)" => Fail
+### layout
+layout(ge,tab8) "do\n  foo\n  bar" => OK [Atom "foo",Atom "bar"] consumed="do\n  foo\n  bar" rest=""
+layout(ge,tab8) "do\n  foo\n  bar\nbaz" => Fail
+layout(ge,tab8) "do { foo ; bar }" => OK [Atom "foo",Atom "bar"] consumed="do { foo ; bar }" rest=""
+layout(ge,tab8) "do\n  foo\n  do\n    bar\n  baz" => OK [Atom "foo",Nested [Atom "bar"],Atom "baz"] consumed="do\n  foo\n  do\n    bar\n  baz" rest=""
+layout(ge,tab8) "do\n foo\n  bar" => Fail
+layout(ge,tab8) "do\n\tfoo\n\tbar" => OK [Atom "foo",Atom "bar"] consumed="do\n\tfoo\n\tbar" rest=""
+layout(ge,tab8) "do foo bar" => Fail
+layout(ge,tab8) "do" => Fail
+layout(ge,tab8) "  do\n    a\n    b" => OK [Atom "a",Atom "b"] consumed="  do\n    a\n    b" rest=""
+layout(ge,tab8) "do\n  a\n b" => Fail
+layout(ge,tab8) "do { a }" => OK [Atom "a"] consumed="do { a }" rest=""
+layout(ge,tab8) "do\n  do\n    x" => OK [Nested [Atom "x"]] consumed="do\n  do\n    x" rest=""
+layout(ge,tab4) "do\n  foo\n  bar" => OK [Atom "foo",Atom "bar"] consumed="do\n  foo\n  bar" rest=""
+layout(ge,tab4) "do\n  foo\n  bar\nbaz" => Fail
+layout(ge,tab4) "do { foo ; bar }" => OK [Atom "foo",Atom "bar"] consumed="do { foo ; bar }" rest=""
+layout(ge,tab4) "do\n  foo\n  do\n    bar\n  baz" => OK [Atom "foo",Nested [Atom "bar"],Atom "baz"] consumed="do\n  foo\n  do\n    bar\n  baz" rest=""
+layout(ge,tab4) "do\n foo\n  bar" => Fail
+layout(ge,tab4) "do\n\tfoo\n\tbar" => OK [Atom "foo",Atom "bar"] consumed="do\n\tfoo\n\tbar" rest=""
+layout(ge,tab4) "do foo bar" => Fail
+layout(ge,tab4) "do" => Fail
+layout(ge,tab4) "  do\n    a\n    b" => OK [Atom "a",Atom "b"] consumed="  do\n    a\n    b" rest=""
+layout(ge,tab4) "do\n  a\n b" => Fail
+layout(ge,tab4) "do { a }" => OK [Atom "a"] consumed="do { a }" rest=""
+layout(ge,tab4) "do\n  do\n    x" => OK [Nested [Atom "x"]] consumed="do\n  do\n    x" rest=""
+layout(ge,tab1) "do\n  foo\n  bar" => OK [Atom "foo",Atom "bar"] consumed="do\n  foo\n  bar" rest=""
+layout(ge,tab1) "do\n  foo\n  bar\nbaz" => Fail
+layout(ge,tab1) "do { foo ; bar }" => OK [Atom "foo",Atom "bar"] consumed="do { foo ; bar }" rest=""
+layout(ge,tab1) "do\n  foo\n  do\n    bar\n  baz" => OK [Atom "foo",Nested [Atom "bar"],Atom "baz"] consumed="do\n  foo\n  do\n    bar\n  baz" rest=""
+layout(ge,tab1) "do\n foo\n  bar" => Fail
+layout(ge,tab1) "do\n\tfoo\n\tbar" => OK [Atom "foo",Atom "bar"] consumed="do\n\tfoo\n\tbar" rest=""
+layout(ge,tab1) "do foo bar" => Fail
+layout(ge,tab1) "do" => Fail
+layout(ge,tab1) "  do\n    a\n    b" => OK [Atom "a",Atom "b"] consumed="  do\n    a\n    b" rest=""
+layout(ge,tab1) "do\n  a\n b" => Fail
+layout(ge,tab1) "do { a }" => OK [Atom "a"] consumed="do { a }" rest=""
+layout(ge,tab1) "do\n  do\n    x" => OK [Nested [Atom "x"]] consumed="do\n  do\n    x" rest=""
+layout(gt) "do\n  foo\n  bar" => Fail
+layout(gt) "do\n  foo\n  bar\nbaz" => Fail
+layout(gt) "do { foo ; bar }" => Fail
+layout(gt) "do\n  foo\n  do\n    bar\n  baz" => Fail
+layout(gt) "do\n foo\n  bar" => Fail
+layout(gt) "do\n\tfoo\n\tbar" => Fail
+layout(gt) "do foo bar" => Fail
+layout(gt) "do" => Fail
+layout(gt) "  do\n    a\n    b" => OK [Atom "a",Atom "b"] consumed="  do\n    a\n    b" rest=""
+layout(gt) "do\n  a\n b" => Fail
+layout(gt) "do { a }" => Fail
+layout(gt) "do\n  do\n    x" => Fail
+layout(eq) "do\n  foo\n  bar" => Fail
+layout(eq) "do\n  foo\n  bar\nbaz" => Fail
+layout(eq) "do { foo ; bar }" => Fail
+layout(eq) "do\n  foo\n  do\n    bar\n  baz" => Fail
+layout(eq) "do\n foo\n  bar" => Fail
+layout(eq) "do\n\tfoo\n\tbar" => Fail
+layout(eq) "do foo bar" => Fail
+layout(eq) "do" => Fail
+layout(eq) "  do\n    a\n    b" => Fail
+layout(eq) "do\n  a\n b" => Fail
+layout(eq) "do { a }" => Fail
+layout(eq) "do\n  do\n    x" => Fail
+layout(any) "do\n  foo\n  bar" => OK [Atom "foo",Atom "bar"] consumed="do\n  foo\n  bar" rest=""
+layout(any) "do\n  foo\n  bar\nbaz" => Fail
+layout(any) "do { foo ; bar }" => OK [Atom "foo",Atom "bar"] consumed="do { foo ; bar }" rest=""
+layout(any) "do\n  foo\n  do\n    bar\n  baz" => OK [Atom "foo",Nested [Atom "bar"],Atom "baz"] consumed="do\n  foo\n  do\n    bar\n  baz" rest=""
+layout(any) "do\n foo\n  bar" => Fail
+layout(any) "do\n\tfoo\n\tbar" => OK [Atom "foo",Atom "bar"] consumed="do\n\tfoo\n\tbar" rest=""
+layout(any) "do foo bar" => Fail
+layout(any) "do" => Fail
+layout(any) "  do\n    a\n    b" => OK [Atom "a",Atom "b"] consumed="  do\n    a\n    b" rest=""
+layout(any) "do\n  a\n b" => Fail
+layout(any) "do { a }" => OK [Atom "a"] consumed="do { a }" rest=""
+layout(any) "do\n  do\n    x" => OK [Nested [Atom "x"]] consumed="do\n  do\n    x" rest=""
+layout(off2) "do\n  foo\n  bar" => Fail
+layout(off2) "do\n  foo\n  bar\nbaz" => Fail
+layout(off2) "do { foo ; bar }" => Fail
+layout(off2) "do\n  foo\n  do\n    bar\n  baz" => Fail
+layout(off2) "do\n foo\n  bar" => Fail
+layout(off2) "do\n\tfoo\n\tbar" => Fail
+layout(off2) "do foo bar" => Fail
+layout(off2) "do" => Fail
+layout(off2) "  do\n    a\n    b" => Fail
+layout(off2) "do\n  a\n b" => Fail
+layout(off2) "do { a }" => Fail
+layout(off2) "do\n  do\n    x" => Fail
+layout(cands) "do\n  foo\n  bar" => Fail
+layout(cands) "do\n  foo\n  bar\nbaz" => Fail
+layout(cands) "do { foo ; bar }" => Fail
+layout(cands) "do\n  foo\n  do\n    bar\n  baz" => Fail
+layout(cands) "do\n foo\n  bar" => Fail
+layout(cands) "do\n\tfoo\n\tbar" => Fail
+layout(cands) "do foo bar" => Fail
+layout(cands) "do" => Fail
+layout(cands) "  do\n    a\n    b" => OK [Atom "a",Atom "b"] consumed="  do\n    a\n    b" rest=""
+layout(cands) "do\n  a\n b" => Fail
+layout(cands) "do { a }" => Fail
+layout(cands) "do\n  do\n    x" => Fail

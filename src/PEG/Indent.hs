@@ -76,6 +76,13 @@ interI (Interval l1 h1) (Interval l2 h2) = Interval (max l1 l2) (min h1 h2)
 
 data RelD = RelD
   { rdName      :: String
+  , rdTotal     :: !Bool
+    -- ^ 'True' when the relation places no constraint at all on columns, i.e.
+    -- when @'preimage' rd i == 'fullI'@ and @'image' rd j@ leaves the
+    -- candidate interval untouched, for every non-empty @i@ and every @j@.
+    -- Only 'anyR' satisfies this.  The parser uses the flag to skip all
+    -- interval arithmetic on grammars that do not use layout, which is the
+    -- overwhelmingly common case.
   , rdDom       :: Interval
   , rdLo        :: Int -> Int
   , rdHi        :: Int -> Bound
@@ -126,6 +133,7 @@ preimage rd i
 eqR :: Rel "="
 eqR = Rel RelD
   { rdName      = "="
+  , rdTotal     = False
   , rdDom       = fullI
   , rdLo        = id
   , rdHi        = Fin
@@ -143,6 +151,7 @@ gapR = Rel . gapD "gap"
 gapD :: String -> Int -> RelD
 gapD name k = RelD
   { rdName      = name
+  , rdTotal     = False
   , rdDom       = Interval k Inf
   , rdLo        = const 0
   , rdHi        = \i -> Fin (i - k)
@@ -163,6 +172,7 @@ geR = Rel (gapD ">=" 0)
 anyR :: Rel "~"
 anyR = Rel RelD
   { rdName      = "~"
+  , rdTotal     = True
   , rdDom       = fullI
   , rdLo        = const 0
   , rdHi        = const Inf
@@ -177,6 +187,7 @@ anyR = Rel RelD
 constR :: Int -> Rel "const"
 constR c = Rel RelD
   { rdName      = "const " ++ show c
+  , rdTotal     = False
   , rdDom       = singletonI c
   , rdLo        = const 0
   , rdHi        = const Inf
@@ -191,6 +202,7 @@ constR c = Rel RelD
 offsetR :: Int -> Rel "offset"
 offsetR k = Rel RelD
   { rdName      = "+" ++ show k
+  , rdTotal     = False
   , rdDom       = Interval k Inf
   , rdLo        = \i -> i - k
   , rdHi        = \i -> Fin (i - k)

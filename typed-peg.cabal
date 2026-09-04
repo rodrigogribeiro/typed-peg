@@ -52,6 +52,7 @@ library
   hs-source-dirs:  src
   exposed-modules:
     PEG
+    PEG.CharSet
     PEG.Grammar
     PEG.Indent
     PEG.Member
@@ -64,14 +65,32 @@ library
     PEG.Type
   build-depends:
       base             >= 4.18 && < 5
-    , template-haskell >= 2.19 && < 2.22
+    , template-haskell >= 2.19 && < 2.24
 
 test-suite typed-peg-examples
   import:          common-opts
   type:            exitcode-stdio-1.0
   hs-source-dirs:  examples
   main-is:         Main.hs
-  other-modules:   Arith, Layout
+  other-modules:   Arith, Layout, Compat
   build-depends:
       base
     , typed-peg
+
+benchmark typed-peg-bench
+  import:          common-opts
+  type:            exitcode-stdio-1.0
+  hs-source-dirs:  bench
+  main-is:         Main.hs
+  other-modules:
+    Bench.Inputs
+    Bench.Peg
+    Bench.Mega
+  ghc-options:     -O2 -rtsopts "-with-rtsopts=-T"
+  build-depends:
+      base
+    , typed-peg
+    , criterion    >= 1.6 && < 1.7
+    , megaparsec   >= 9.5 && < 10
+    , deepseq
+    , text

@@ -1,0 +1,25 @@
+Preprocessing benchmark 'typed-peg-bench' for typed-peg-0.1.0.0...
+Building benchmark 'typed-peg-bench' for typed-peg-0.1.0.0...
+Running 1 benchmarks...
+Benchmark typed-peg-bench: RUNNING...
+bytes allocated per parse (and per input byte)
+                           peg  mega(Str)  mega(Txt)   peg/B  mega/B
+arith [308B]                382640      383136      462976    1242.3    1243.9
+arith [1230B]              1376648     1520088     1845576    1119.2    1235.8
+arith [4897B]              5493136     6063448     7345048    1121.7    1238.2
+csv [1105B]                1019184     1148088     1394968     922.3    1039.0
+csv [5517B]                5069688     5706888     6961120     918.9    1034.4
+csv [22043B]              20265280    22807208    27820240     919.4    1034.7
+idents [799B]               176984      128128      308520     221.5     160.4
+idents [3999B]              817336      633336     1516936     204.4     158.4
+idents [15999B]            3265336     2533328     6064936     204.1     158.3
+json [811B]                 557160      650544      967096     687.0     802.2
+json [4062B]               2725536     3180776     4760392     671.0     783.1
+json [16257B]             10878832    12714528    19033336     669.2     782.1
+nested [101B]                60512      144504      190040     599.1    1430.7
+nested [401B]               223712      514376      691520     557.9    1282.7
+quoted-lookahead [749B]      240536       97616      255784     321.1     130.3
+quoted-lookahead [2999B]      955728      383792     1017160     318.7     128.0
+quoted-class [749B]         131960       96992      259152     176.2     129.5
+quoted-class [2999B]        516536      383792     1017160     172.2     128.0
+Benchmark typed-peg-bench: FINISH

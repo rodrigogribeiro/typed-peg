@@ -19,7 +19,8 @@
 --
 -- See the @examples/@ directory for complete working grammars.
 module PEG
-  ( module PEG.Type
+  ( module PEG.CharSet
+  , module PEG.Type
   , module PEG.TyLevel
   , module PEG.Member
   , module PEG.Indent
@@ -28,6 +29,7 @@ module PEG
   , module PEG.Parse
   ) where
 
+import PEG.CharSet
 import PEG.Grammar
 import PEG.Indent
 import PEG.Member

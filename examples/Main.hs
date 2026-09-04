@@ -3,6 +3,7 @@ module Main where
 import PEG (parse, parseWith, Result(..))
 import Arith (arith, evalExp)
 import Layout (doExp, layoutOpts)
+import Compat (compatMain)
 
 showResult :: Show a => Result a -> String
 showResult (OK a _ _) = "OK " ++ show a
@@ -23,3 +24,6 @@ main = do
   putStrLn "\n=== Layout (do-notation) ==="
   let testLayout s = putStrLn $ showResult (parseWith layoutOpts doExp s)
   testLayout "foo\n  bar\n  baz\nqux"
+
+  putStrLn "\n=== Differential battery ==="
+  compatMain
