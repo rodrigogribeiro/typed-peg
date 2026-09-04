@@ -4,6 +4,7 @@ import PEG (parse, parseWith, Result(..))
 import Arith (arith, evalExp)
 import Layout (doExp, layoutOpts)
 import Compat (compatMain)
+import Patterns (patternsMain)
 
 showResult :: Show a => Result String a -> String
 showResult (OK a _ _) = "OK " ++ show a
@@ -24,6 +25,9 @@ main = do
   putStrLn "\n=== Layout (do-notation) ==="
   let testLayout s = putStrLn $ showResult (parseWith layoutOpts doExp s)
   testLayout "foo\n  bar\n  baz\nqux"
+
+  putStrLn "\n=== Patterns (see peg-patterns.md) ==="
+  patternsMain
 
   putStrLn "\n=== Differential battery ==="
   compatMain

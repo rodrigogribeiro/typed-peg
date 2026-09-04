@@ -75,7 +75,7 @@ test-suite typed-peg-examples
   type:            exitcode-stdio-1.0
   hs-source-dirs:  examples
   main-is:         Main.hs
-  other-modules:   Arith, Layout, Compat
+  other-modules:   Arith, Layout, Compat, Patterns
   build-depends:
       base
     , bytestring

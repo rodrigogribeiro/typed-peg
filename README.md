@@ -61,6 +61,15 @@ import PEG
 -- See examples/Arith.hs for a complete arithmetic expression parser
 ```
 
+## Patterns
+
+[`peg-patterns.md`](peg-patterns.md) works through patterns for specifying
+languages with PEGs and this library, following Willis and Wu's *Design
+Patterns for Parser Combinators* (Haskell 2021) and noting where a PEG differs
+— committed choice, left recursion as a type error, keywords as negative
+lookahead — and where typed-peg cannot yet follow.  Every fragment in it
+compiles, in [`examples/Patterns.hs`](examples/Patterns.hs).
+
 ## Building
 
 ```bash
