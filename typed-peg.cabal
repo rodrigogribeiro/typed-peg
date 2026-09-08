@@ -3,7 +3,7 @@ name:               typed-peg
 version:            0.2.0.0
 synopsis:           Type-safe PEG parser combinators
 description:
-  A library for building PEG (Parsing Expression Grammar) parsers
+  A library for building Parsing Expression Grammars parsers
   with compile-time safety guarantees. Grammar non-terminals are
   indexed by their nullability and FIRST sets at the type level,
   making left-recursive grammars a type error.
