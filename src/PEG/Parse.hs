@@ -5,6 +5,7 @@
 {-# LANGUAGE MagicHash           #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeAbstractions    #-}
 {-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE TypeOperators       #-}
@@ -71,7 +72,6 @@ import PEG.Member
 import PEG.Stream
 import PEG.Syntax
 import PEG.Type
-import PEG.TyLevel (Lookup)
 
 -- | The result of running a grammar.
 --
@@ -176,7 +176,7 @@ data CRules (s :: Type) (env :: Env) (defs :: Env) where
         -> CRules s env rest
         -> CRules s env ('(n, 'EnvEntry ty a) ': rest)
 
-clookup :: Member n defs ty a -> CRules s env defs -> Step s a
+clookup :: Member n defs a -> CRules s env defs -> Step s a
 clookup Here      (CCons f _)    = f
 clookup (There m) (CCons _ rest) = clookup m rest
 
@@ -245,10 +245,10 @@ compileE tw table = comp
     comp (Span  cs) = spanChunk (\c -> memberCS c cs) (simpleCS cs) False
     comp (Span1 cs) = spanChunk (\c -> memberCS c cs) (simpleCS cs) True
 
-    comp (NT (_ :: Name n)) =
-      clookup (member :: Member n env (TyOf (Lookup n env))
-                                      (ResOf (Lookup n env)))
-              table
+    -- 'ty' and 'a' come from the constructor's own equality
+    -- @Lookup n env ~ 'EnvEntry ty a@, so no type family has to be reduced
+    -- here at all.
+    comp (NT @n _) = clookup (member @n @env) table
 
     -- Neither this nor 'Map' below allocates: the intermediate results travel
     -- in registers, so a quasi-quoted rule of @n@ items costs @n@ calls and

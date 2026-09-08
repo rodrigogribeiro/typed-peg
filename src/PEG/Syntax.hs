@@ -49,6 +49,7 @@ module PEG.Syntax
   , SeqTy
   , ChoiceTy
   , NTTy
+  , NTGo
   ) where
 
 import Data.Kind    (Type)
@@ -65,6 +66,19 @@ import PEG.Member
 data Name (n :: Symbol) = Name
 
 -- | The 'Ty' of a sequence @e1 e2@.
+--
+-- Written as a projective type synonym rather than a type family so that it
+-- reduces to a @'MkTy'@ head even when its operands are still abstract.  That
+-- is what lets a polymorphic combinator such as
+--
+-- @
+-- lexeme :: PExp s env ty a -> PExp s env (SeqTy ty ('MkTy 'True '[])) a
+-- @
+--
+-- compose without the caller having to get the nesting of 'SeqTy' exactly
+-- right.  The cost it used to carry — an exponential blow-up as the operands
+-- get duplicated across the right-hand side — came from 'Union' and
+-- 'ConsIfAbsent', not from here; see "PEG.TyLevel".
 type SeqTy t1 t2 =
   'MkTy (And (Nullable t1) (Nullable t2))
         (Union (First t1) (If (Nullable t1) (First t2) '[]))
@@ -75,9 +89,18 @@ type ChoiceTy t1 t2 =
         (Union (First t1) (First t2))
 
 -- | The 'Ty' of a non-terminal reference @n@ looked up in @env@.
-type NTTy n env =
-  'MkTy (Nullable (TyOf (Lookup n env)))
-        (ConsIfAbsent n (First (TyOf (Lookup n env))))
+type NTTy n env = NTGo n (TyOf (Lookup n env))
+
+-- | The 'Ty' of a reference to a non-terminal named @n@ whose own 'Ty' is
+-- @t@.
+--
+-- 'NT' and 'nt' are stated in terms of this rather than 'NTTy' so that the
+-- environment is searched /once/ per occurrence, by the constructor's
+-- @Lookup n env ~ 'EnvEntry ty a@ equality.  Naming @Lookup n env@ twice, as
+-- an expansion of 'NTTy' does, doubles the cost of what profiling shows to be
+-- the dominant term in checking a large grammar.
+type family NTGo (n :: Symbol) (t :: Ty) :: Ty where
+  NTGo n ('MkTy nu f) = 'MkTy nu (ConsIfAbsent n f)
 
 -- | A typed PEG expression over the stream @s@.
 --
@@ -119,11 +142,18 @@ data PExp (s :: Type) (env :: Env) (ty :: Ty) (a :: Type) where
   -- | As 'Span', but the run must be non-empty: @[a-z]+@.
   Span1    :: !CharSet -> PExp s env ('MkTy 'False '[]) s
   AnyChar  :: PExp s env ('MkTy 'False '[]) Char
-  NT       :: ( KnownSymbol n
-              , KnownMember n env (TyOf (Lookup n env)) (ResOf (Lookup n env))
+  -- The environment is looked up /once/, by the equality below, and the
+  -- result is bound to the rigid variables @ty@ and @a@.  Passing
+  -- @TyOf (Lookup n env)@ straight to 'KnownMember' instead makes GHC
+  -- re-reduce the lookup at every step of the instance chain that walks
+  -- @env@, which costs @O(|env|^2)@ per non-terminal occurrence.
+  NT       :: forall n ty s env a.
+              ( KnownSymbol n
+              , Lookup n env ~ 'EnvEntry ty a
+              , KnownMember n env a
               )
            => Name n
-           -> PExp s env (NTTy n env) (ResOf (Lookup n env))
+           -> PExp s env (NTGo n ty) a
   Seq      :: PExp s env t1 (a -> b)
            -> PExp s env t2 a
            -> PExp s env (SeqTy t1 t2) b
@@ -155,11 +185,12 @@ instance Functor (PExp s env ty) where
 -- The name is deliberately the /first/ quantified variable, so that
 -- @nt \@\"expr\"@ keeps working: the stream and environment are recovered by
 -- unification.
-nt :: forall n env s.
+nt :: forall n env s ty a.
       ( KnownSymbol n
-      , KnownMember n env (TyOf (Lookup n env)) (ResOf (Lookup n env))
+      , Lookup n env ~ 'EnvEntry ty a
+      , KnownMember n env a
       )
-   => PExp s env (NTTy n env) (ResOf (Lookup n env))
+   => PExp s env (NTGo n ty) a
 nt = NT (Name :: Name n)
 
 -- | Succeed without consuming any input.

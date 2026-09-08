@@ -40,16 +40,17 @@ data Rules (s :: Type) (env :: Env) (defs :: Env) where
         -> Rules s env ('(n, 'EnvEntry ty a) ': rest)
 
 type family Acyclic (env :: Env) :: Constraint where
-  Acyclic '[]                             = ()
-  Acyclic ('(s, 'EnvEntry ty _) ': rest) =
-    (NotLeftRec s (Elem s (First ty)) ty, Acyclic rest)
+  Acyclic '[]                                      = ()
+  Acyclic ('(s, 'EnvEntry ('MkTy _ f) _) ': rest) =
+    (NotLeftRec s (Elem s f) f, Acyclic rest)
 
-type family NotLeftRec (s :: Symbol) (b :: Bool) (ty :: Ty) :: Constraint where
-  NotLeftRec _ 'False _  = ()
-  NotLeftRec s 'True  ty =
+type family NotLeftRec (s :: Symbol) (b :: Bool)
+                       (f :: [Symbol]) :: Constraint where
+  NotLeftRec _ 'False _ = ()
+  NotLeftRec s 'True  f =
     TypeError ('Text "Left-recursive non-terminal: " ':<>: 'ShowType s
          ':$$: 'Text "Its head set already contains itself: "
-               ':<>: 'ShowType (First ty)
+               ':<>: 'ShowType f
          ':$$: 'Text "Violates the acyclicity condition i `notElem` Gamma(i).F.")
 
 -- | A complete PEG grammar over the stream @s@: a set of mutually recursive

@@ -61,6 +61,33 @@ import PEG
 -- See examples/Arith.hs for a complete arithmetic expression parser
 ```
 
+## Grammar size
+
+The nullability and FIRST set of every rule are computed by GHC while it
+type-checks the grammar, so a grammar's size shows up as compile time.  A
+FIRST set is a type-level list of non-terminal names kept in **alphabetical
+order**:
+
+```haskell
+type CalcEnv =
+  '[ '("expr" , 'EnvEntry ('MkTy 'False '["atom", "term", "unary"]) Expr)
+   , '("term" , 'EnvEntry ('MkTy 'False '["atom", "unary"])         Expr)
+   , '("unary", 'EnvEntry ('MkTy 'False '["atom"])                  Expr)
+   , '("atom" , 'EnvEntry ('MkTy 'False '[])                        Expr)
+   ]
+```
+
+The order is not cosmetic.  It gives a set exactly one spelling, which is what
+lets the union of two FIRST sets be a single merge pass; listing one in some
+other order is a type error naming the first position that disagrees.
+
+That merge nests one type-family reduction per element of the result, so a
+grammar with a FIRST set of more than about a hundred non-terminals hits GHC's
+default reduction limit and reports `Reduction stack overflow`.  Add
+`-freduction-depth=0` to `ghc-options` if you get there; it is a limit rather
+than a slowdown, and a union of two 128-element sets takes about 0.3 s once it
+is lifted.
+
 ## Patterns
 
 [`peg-patterns.md`](peg-patterns.md) works through patterns for specifying

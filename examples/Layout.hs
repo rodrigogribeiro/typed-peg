@@ -26,7 +26,7 @@ data DoStmt
 -- environment this way.
 type DoEnv s =
   '[ '("doexp" , 'EnvEntry ('MkTy 'False '[])                               [DoStmt])
-   , '("istmts", 'EnvEntry ('MkTy 'False '["ws", "stmt", "doexp", "name"]) [DoStmt])
+   , '("istmts", 'EnvEntry ('MkTy 'False '["doexp", "name", "stmt", "ws"]) [DoStmt])
    , '("stmts" , 'EnvEntry ('MkTy 'False '["ws"])                          [DoStmt])
    , '("stmt"  , 'EnvEntry ('MkTy 'False '["doexp", "name"])               DoStmt)
    , '("name"  , 'EnvEntry ('MkTy 'False '[])                              s)

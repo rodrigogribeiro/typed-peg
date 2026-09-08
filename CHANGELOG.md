@@ -1,5 +1,76 @@
 # Changelog
 
+## Unreleased — compile time of large grammars
+
+Checking a grammar was **exponential in the size of its FIRST sets**.  On a
+chain of `n` mutually referring rules, GHC needed 0.7 s at `n = 8`, 12 s at
+`n = 12`, and more than five minutes at `n = 15`; anything the size of a real
+language front end never finished.  The same grammars now check in
+milliseconds-to-seconds and the curve is polynomial: `n = 12` takes 0.5 s,
+`n = 30` 1.7 s, `n = 60` 14 s.
+
+One limit is new rather than fixed: the union of two FIRST sets nests one
+type-family reduction per element of the result, so a FIRST set of more than
+about a hundred non-terminals now reports `Reduction stack overflow` instead
+of being slow.  `-freduction-depth=0` lifts it, and a union of two 128-element
+sets then takes about 0.3 s.
+
+### Fixed
+
+- **`Union` and `ConsIfAbsent` were exponential.**  `ConsIfAbsent x xs`
+  expanded to `If (Elem x xs) xs (x ': xs)`, naming `xs` three times.  In
+  `Union (x ': xs) ys = ConsIfAbsent x (Union xs ys)` that `xs` is an
+  unreduced `Union`, so each step left GHC three copies of the pending
+  computation to reduce and each of those tripled again: `3^n` reductions for
+  a union of two `n`-element sets.  Both families now dispatch on an
+  already-computed `Ordering` in a helper whose every right-hand side names
+  each argument — and in particular the recursive call — exactly once.
+- **`Lookup` threaded the whole environment through its recursion** so that
+  the not-found case could list the available non-terminals.  An environment
+  of `n` rules is `O(n^2)` type nodes, because every entry carries a FIRST
+  set, and there is one lookup per occurrence of every non-terminal.  The
+  search now carries only the tail it has still to scan; the environment is
+  named once, in the branch that reports the error.
+- **`Lookup` matched through `CmpSymbol` and a dispatch family**, two
+  type-family reductions per entry scanned.  It now matches on a non-linear
+  pattern — the name appears twice in the clause — so GHC decides each entry
+  by syntactic equality and apartness, in one reduction.  The trick is
+  `Data.Type.Map`'s, from `type-level-sets`.  Worth 1.4x-1.6x on a large
+  grammar, since the search runs once per occurrence of every non-terminal.
+- **`nt` and `PExp`'s `NT` made GHC search the environment several times per
+  occurrence.**  Their constraint was
+  `KnownMember n env (TyOf (Lookup n env)) (ResOf (Lookup n env))`, and
+  resolving `KnownMember` walks `env` one instance at a time, re-normalising
+  every index at each step.  Both now name the entry once, through a
+  `Lookup n env ~ 'EnvEntry ty a` equality, and pass the resulting rigid
+  types to `KnownMember`.
+
+### Changed
+
+- **Breaking.  A FIRST set is now written in alphabetical order**, and a
+  declared environment that lists one in any other order is a type error
+  naming the first position that disagrees.  Sortedness is what makes a set
+  have a single spelling, which is what lets `Union` be one merge pass.
+  Migration is mechanical: sort each `'[...]` in your `Env`, so
+  `'["term", "factor", "number"]` becomes `'["factor", "number", "term"]`.
+- **Breaking.** `Member` and `KnownMember` lose their `Ty` index:
+  `Member s env a` and `KnownMember s env a`.  Every index of a class is
+  carried along and re-normalised at each step of the instance chain that
+  walks the environment, and a `Ty` carries a FIRST set — so an index for it
+  made each step cost `O(|env|)`.  Nothing needed it; `Here` binds the
+  entry's `ty` existentially, which is enough to pull a rule out of a rule
+  table.
+- `PEG.Syntax` exports `NTGo`, the `Ty` of a reference to a non-terminal
+  whose own `Ty` is already known.  `NTTy n env` is now defined as
+  `NTGo n (TyOf (Lookup n env))` and keeps working in signatures.
+
+`SeqTy` and `ChoiceTy` are deliberately **unchanged**.  They duplicate their
+operands across their right-hand sides too, but measurement says that costs
+nothing here, and writing them as type synonyms is what makes them reduce to a
+`'MkTy` head while their operands are still abstract — which is what lets a
+polymorphic combinator such as `lexeme` compose without its caller having to
+get the nesting of `SeqTy` exactly right.
+
 ## 0.2.0.0 — 2026-09-04
 
 This release is **not source-compatible with 0.1.0.0**: `PExp`, `Rules`,

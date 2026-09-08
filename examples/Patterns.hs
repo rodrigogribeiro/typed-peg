@@ -121,8 +121,8 @@ mkAsgn v e = Asgn (chunkToString v) e
 --------------------------------------------------------------------------------
 
 type CalcEnv s =
-  '[ '("expr" , 'EnvEntry ('MkTy 'False '["term", "unary", "atom"]) Expr)
-   , '("term" , 'EnvEntry ('MkTy 'False '["unary", "atom"])         Expr)
+  '[ '("expr" , 'EnvEntry ('MkTy 'False '["atom", "term", "unary"]) Expr)
+   , '("term" , 'EnvEntry ('MkTy 'False '["atom", "unary"])         Expr)
    , '("unary", 'EnvEntry ('MkTy 'False '["atom"])                  Expr)
    , '("atom" , 'EnvEntry ('MkTy 'False '[])                        Expr)
    ]
@@ -175,8 +175,8 @@ addOp = Grammar [pegRules| op <- '+' { Add } / '-' { Sub } |] (nt @"op")
 type ProgEnv s =
   '[ '("prog" , 'EnvEntry ('MkTy 'False '["asgn"]) [Asgn])
    , '("asgn" , 'EnvEntry ('MkTy 'False '[])       Asgn)
-   , '("expr" , 'EnvEntry ('MkTy 'False '["term", "unary", "atom"]) Expr)
-   , '("term" , 'EnvEntry ('MkTy 'False '["unary", "atom"])         Expr)
+   , '("expr" , 'EnvEntry ('MkTy 'False '["atom", "term", "unary"]) Expr)
+   , '("term" , 'EnvEntry ('MkTy 'False '["atom", "unary"])         Expr)
    , '("unary", 'EnvEntry ('MkTy 'False '["atom"])                  Expr)
    , '("atom" , 'EnvEntry ('MkTy 'False '[])                        Expr)
    ]

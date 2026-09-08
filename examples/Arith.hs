@@ -52,7 +52,7 @@ addOp l ('/', r) = Div l r
 addOp _ (c  , _) = error ("addOp: unexpected operator " ++ show c)
 
 type ArithEnv =
-  '[ '("expr"  , 'EnvEntry ('MkTy 'False '["term", "factor", "number"]) Exp)
+  '[ '("expr"  , 'EnvEntry ('MkTy 'False '["factor", "number", "term"]) Exp)
    , '("term"  , 'EnvEntry ('MkTy 'False '["factor", "number"])         Exp)
    , '("factor", 'EnvEntry ('MkTy 'False '["number"])                   Exp)
    , '("number", 'EnvEntry ('MkTy 'False '[])                           Exp)

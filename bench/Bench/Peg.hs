@@ -62,7 +62,7 @@ readInt :: Stream s => s -> Exp
 readInt ds = Lit (read (chunkToString ds))
 
 type ArithEnv =
-  '[ '("expr"  , 'EnvEntry ('MkTy 'False '["term", "factor", "number"]) Exp)
+  '[ '("expr"  , 'EnvEntry ('MkTy 'False '["factor", "number", "term"]) Exp)
    , '("term"  , 'EnvEntry ('MkTy 'False '["factor", "number"])         Exp)
    , '("factor", 'EnvEntry ('MkTy 'False '["number"])                   Exp)
    , '("number", 'EnvEntry ('MkTy 'False '[])                           Exp)
@@ -87,7 +87,7 @@ arith =
 --------------------------------------------------------------------------------
 
 type CsvEnv =
-  '[ '("csv", 'EnvEntry ('MkTy 'False '["row", "num"]) [[Int]])
+  '[ '("csv", 'EnvEntry ('MkTy 'False '["num", "row"]) [[Int]])
    , '("row", 'EnvEntry ('MkTy 'False '["num"])        [Int])
    , '("num", 'EnvEntry ('MkTy 'False '[])             Int)
    ]
@@ -149,13 +149,13 @@ orEmpty Nothing   = []
 orEmpty (Just xs) = xs
 
 type JsonEnv =
-  '[ '("json"   , 'EnvEntry ('MkTy 'False '["ws","value","object","array","strlit","number"]) JValue)
-   , '("value"  , 'EnvEntry ('MkTy 'False '["object","array","strlit","number"])              JValue)
+  '[ '("json"   , 'EnvEntry ('MkTy 'False '["array","number","object","strlit","value","ws"]) JValue)
+   , '("value"  , 'EnvEntry ('MkTy 'False '["array","number","object","strlit"])              JValue)
    , '("object" , 'EnvEntry ('MkTy 'False '[])                                                JValue)
    , '("members", 'EnvEntry ('MkTy 'False '["pair","strlit"])                    [(String, JValue)])
    , '("pair"   , 'EnvEntry ('MkTy 'False '["strlit"])                             (String, JValue))
    , '("array"  , 'EnvEntry ('MkTy 'False '[])                                                JValue)
-   , '("elems"  , 'EnvEntry ('MkTy 'False '["value","object","array","strlit","number"])    [JValue])
+   , '("elems"  , 'EnvEntry ('MkTy 'False '["array","number","object","strlit","value"])    [JValue])
    , '("strlit" , 'EnvEntry ('MkTy 'False '[])                                                String)
    , '("number" , 'EnvEntry ('MkTy 'False '[])                                                JValue)
    , '("ws"     , 'EnvEntry ('MkTy 'True  '[])                                                    ())
