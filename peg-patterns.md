@@ -11,11 +11,13 @@ but three things change the picture:
 - **Ordered choice is committed.** Once an alternative succeeds, a PEG never
   reconsiders it. There is no `try`, because there is nothing to undo — but the
   order in which you write alternatives becomes part of the specification.
-- **Left recursion is a type error**, not a discipline to remember. The
-  `Acyclic` constraint is checked when you construct a `Grammar`.
-- **The grammar's shape is written down in a type.** The `Env` records every
-  rule's nullability, FIRST set and result type. Several of the paper's
-  patterns become things the compiler enforces rather than things you adopt.
+- **Left recursion is rejected when you write the grammar**, not a discipline
+  to remember. `PEG.Analysis` runs inside the quasi-quoter and reports it,
+  naming the rule and the cycle.
+- **The grammar's shape is written down in a type.** The `Env` records what
+  every rule returns, so a reference to a rule that does not exist, or at the
+  wrong type, is a type error. Several of the paper's patterns become things
+  the compiler enforces rather than things you adopt.
 
 Every code fragment below is compiled: it lives in
 [`examples/Patterns.hs`](examples/Patterns.hs) and runs as part of
@@ -55,20 +57,23 @@ expr = Add <$> expr <*> (char '+' *> term) <|> ... <|> term
 
 and observing that it loops. Section 2 is then about the rewrite that fixes it.
 
-In typed-peg you cannot write it in the first place. Each rule's type carries
-its FIRST set, and `Grammar` demands `Acyclic env`:
+In typed-peg you cannot write it in the first place. The quasi-quoter
+computes each rule's FIRST set as it splices the grammar, and rejects one that
+contains its own rule:
 
 ```
 expr <- e:expr '+' t:term { Add e t }
 ```
 
 ```
-Left-recursive non-terminal: "expr"
-Its head set already contains itself: ["expr", "term"]
-Violates the acyclicity condition i `notElem` Gamma(i).F.
+    • pegRules:
+      left-recursive non-terminal: expr
+        the cycle is expr -> expr
+        a PEG cannot backtrack into a committed choice, so this rule
+        would not consume input before calling itself
 ```
 
-reported at the `Grammar` constructor, before anything runs.
+reported at the quasi-quoter, before anything runs.
 
 **Pattern.** Do not treat left-recursion removal as a step you perform. Write
 the grammar; if it compiles, no rule can loop on its own head. The rewrite
@@ -117,10 +122,10 @@ what each level produces:
 
 ```haskell
 type CalcEnv s =
-  '[ '("expr" , 'EnvEntry ('MkTy 'False '["term", "unary", "atom"]) Expr)
-   , '("term" , 'EnvEntry ('MkTy 'False '["unary", "atom"])         Expr)
-   , '("unary", 'EnvEntry ('MkTy 'False '["atom"])                  Expr)
-   , '("atom" , 'EnvEntry ('MkTy 'False '[])                        Expr)
+  '[ '("expr" , 'EnvEntry Expr)
+   , '("term" , 'EnvEntry Expr)
+   , '("unary", 'EnvEntry Expr)
+   , '("atom" , 'EnvEntry Expr)
    ]
 ```
 
@@ -140,10 +145,20 @@ homogeneous choice; changing `term` to produce a `Term` and `expr` an `Expr`
 makes a misplaced operator a type error, exactly as in the paper — at the cost
 of an AST with one constructor per layer.
 
-Note the FIRST set columns. They are not decoration: `'["term", "unary",
-"atom"]` says that entering `expr` can immediately enter any of those, and it
-is what the acyclicity check consumes. Getting them wrong is a compile error,
-so they double as a checked comment.
+An entry used to carry the rule's nullability and FIRST set as well —
+`'("expr", 'EnvEntry ('MkTy 'False '["atom", "term", "unary"]) Expr)` — which
+is what the acyclicity check consumed. It was also the whole cost of compiling
+a large grammar, because a FIRST set grows with the grammar and the
+environment is solved against once per reference; see `bench-compile/`. The
+sets are now computed by `PEG.Analysis` at the splice instead, so what is left
+to write down is the part only you know: what the rule returns.
+
+Better still, do not write it down at all. `pegGrammar` generates the
+environment from the same `:: T` annotations:
+
+```
+expr :: Expr <- t:term ts:(o:[+-] u:term)* { chainl t ts }
+```
 
 ### 1.4 Precedence tables: absent, but not impossible
 
@@ -197,20 +212,23 @@ and demands end of input.** Consuming leading whitespace inside a lexeme breaks
 position reporting and makes it ambiguous who is responsible for a given space.
 
 ```haskell
-ws :: PExp s env ('MkTy 'True '[]) s
+ws :: PExp s env s
 ws = spanOf (fromRanges [(' ', ' '), ('\t', '\t'), ('\r', '\r'), ('\n', '\n')])
 
-lexeme :: PExp s env ty a -> PExp s env (SeqTy ty ('MkTy 'True '[])) a
+lexeme :: PExp s env a -> PExp s env a
 lexeme p = (\x _ -> x) <$>. p <*>. ws
 
-eof :: PExp s env ('MkTy 'True '[]) ()
+eof :: PExp s env ()
 eof = Not AnyChar
 
-fully :: PExp s env ty a
-      -> PExp s env (SeqTy ('MkTy 'True '[])
-                           (SeqTy ty ('MkTy 'True '[]))) a
+fully :: PExp s env a -> PExp s env a
 fully p = (\_ x _ -> x) <$>. ws <*>. p <*>. eof
 ```
+
+These are ordinary polymorphic functions. They did not use to be: while a
+`PExp` carried its nullability and FIRST set in a fourth index, `lexeme` had
+to be written `PExp s env ty a -> PExp s env (SeqTy ty ('MkTy 'True '[])) a`
+and everything built on it had to restate the nesting exactly.
 
 ```
 "12"     => OK "12"
@@ -266,7 +284,7 @@ undo the partial match.
 In a PEG it is just `!`:
 
 ```haskell
-keyword :: String -> PExp s env ('MkTy 'False '[]) ()
+keyword :: String -> PExp s env ()
 keyword k = (\_ _ -> ()) <$>. stringNE k <*>. Not (sat identCont)
 ```
 
@@ -352,9 +370,9 @@ later, so that bookkeeping is decoupled from the parser. In typed-peg this is
 just a rule whose result type is a function:
 
 ```haskell
-type OpEnv = '[ '("op", 'EnvEntry ('MkTy 'False '[]) (Expr -> Expr -> Expr)) ]
+type OpEnv = '[ '("op", 'EnvEntry (Expr -> Expr -> Expr)) ]
 
-addOp :: Stream s => Grammar s OpEnv _ (Expr -> Expr -> Expr)
+addOp :: Stream s => Grammar s OpEnv (Expr -> Expr -> Expr)
 addOp = Grammar [pegRules| op <- '+' { Add } / '-' { Sub } |] (nt @"op")
 ```
 
@@ -465,7 +483,7 @@ grammar is rejected:
 ```
 Couldn't match expected type 's' with actual type '[Char]'
   's' is a rigid type variable bound by the inferred type of
-    identG :: Stream s => Grammar s (IdEnv s) (MkTy False '["ident"]) s
+    identG :: Stream s => Grammar s (IdEnv s) s
 ```
 
 So the idiom quietly ties a grammar to one stream. The fix is also faster,
@@ -488,14 +506,16 @@ grammar's interface, and it is checked:
 
 ```haskell
 type CalcEnv s =
-  '[ '("expr" , 'EnvEntry ('MkTy 'False '["term", "unary", "atom"]) Expr)
+  '[ '("expr" , 'EnvEntry Expr)
    , ...
    ]
 ```
 
-Each entry states three things: whether the rule can match the empty string,
-which non-terminals it can enter first, and what it produces. All three are
-verified against the rule bodies.
+Each entry states what the rule produces, and that is verified against the
+rule body. Entries used to state two things more — whether the rule can match
+the empty string, and which non-terminals it can enter first — which is what
+made left recursion a type error and what made a large grammar slow to
+compile; both now happen at the splice instead.
 
 **Pattern.** Write the `Env` before the rules, as you would write a signature
 before a function. When a rule's FIRST set surprises you, that is usually the
