@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               typed-peg
-version:            0.2.0.0
+version:            0.3.0.0
 synopsis:           Type-safe PEG parser combinators
 description:
   A library for building Parsing Expression Grammars parsers
