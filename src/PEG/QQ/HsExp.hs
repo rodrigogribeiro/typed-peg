@@ -8,6 +8,7 @@
 -- @base@ and @template-haskell@.
 module PEG.QQ.HsExp
   ( parseHsExp
+  , parseHsType
   ) where
 
 import Data.Char           (isAlpha, isAlphaNum, isDigit, isHexDigit,
@@ -199,6 +200,21 @@ spanIdent s =
   in (c ++ n, r)
 
 type P a = [Tok] -> Either String (a, [Tok])
+
+-- | Parse a type: what a @rule :: T@ annotation carries.  The grammar is the
+-- one 'pType' already accepted inside an expression's @::@ annotation —
+-- application, functions, lists and tuples — so nothing new is parsed here,
+-- only reached from a new entry point.
+parseHsType :: String -> Either String Type
+parseHsType src = do
+  toks <- lexHs src
+  case toks of
+    [] -> Left "empty type annotation"
+    _  -> do
+      (t, rest) <- pType toks
+      case rest of
+        [] -> Right t
+        _  -> Left ("unconsumed input in type " ++ atTok rest)
 
 parseHsExp :: String -> Either String Exp
 parseHsExp src = do

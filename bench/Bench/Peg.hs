@@ -62,14 +62,14 @@ readInt :: Stream s => s -> Exp
 readInt ds = Lit (read (chunkToString ds))
 
 type ArithEnv =
-  '[ '("expr"  , 'EnvEntry ('MkTy 'False '["factor", "number", "term"]) Exp)
-   , '("term"  , 'EnvEntry ('MkTy 'False '["factor", "number"])         Exp)
-   , '("factor", 'EnvEntry ('MkTy 'False '["number"])                   Exp)
-   , '("number", 'EnvEntry ('MkTy 'False '[])                           Exp)
+  '[ '("expr"  , 'EnvEntry Exp)
+   , '("term"  , 'EnvEntry Exp)
+   , '("factor", 'EnvEntry Exp)
+   , '("number", 'EnvEntry Exp)
    ]
 
 {-# INLINABLE arith #-}
-arith :: Stream s => Grammar s ArithEnv _ Exp
+arith :: Stream s => Grammar s ArithEnv Exp
 arith =
   Grammar
     [pegRules|
@@ -87,13 +87,13 @@ arith =
 --------------------------------------------------------------------------------
 
 type CsvEnv =
-  '[ '("csv", 'EnvEntry ('MkTy 'False '["num", "row"]) [[Int]])
-   , '("row", 'EnvEntry ('MkTy 'False '["num"])        [Int])
-   , '("num", 'EnvEntry ('MkTy 'False '[])             Int)
+  '[ '("csv", 'EnvEntry [[Int]])
+   , '("row", 'EnvEntry [Int])
+   , '("num", 'EnvEntry Int)
    ]
 
 {-# INLINABLE csv #-}
-csv :: Stream s => Grammar s CsvEnv _ [[Int]]
+csv :: Stream s => Grammar s CsvEnv [[Int]]
 csv =
   Grammar
     [pegRules|
@@ -113,12 +113,12 @@ readNat = read . chunkToString
 -- The environment is parameterised by the stream: @ident@ is a character
 -- class, so its result is a chunk of the input.
 type IdentEnv s =
-  '[ '("idents", 'EnvEntry ('MkTy 'False '["ident"]) [s])
-   , '("ident" , 'EnvEntry ('MkTy 'False '[])        s)
+  '[ '("idents", 'EnvEntry [s])
+   , '("ident" , 'EnvEntry s)
    ]
 
 {-# INLINABLE idents #-}
-idents :: Stream s => Grammar s (IdentEnv s) _ [s]
+idents :: Stream s => Grammar s (IdentEnv s) [s]
 idents =
   Grammar
     [pegRules|
@@ -149,20 +149,20 @@ orEmpty Nothing   = []
 orEmpty (Just xs) = xs
 
 type JsonEnv =
-  '[ '("json"   , 'EnvEntry ('MkTy 'False '["array","number","object","strlit","value","ws"]) JValue)
-   , '("value"  , 'EnvEntry ('MkTy 'False '["array","number","object","strlit"])              JValue)
-   , '("object" , 'EnvEntry ('MkTy 'False '[])                                                JValue)
-   , '("members", 'EnvEntry ('MkTy 'False '["pair","strlit"])                    [(String, JValue)])
-   , '("pair"   , 'EnvEntry ('MkTy 'False '["strlit"])                             (String, JValue))
-   , '("array"  , 'EnvEntry ('MkTy 'False '[])                                                JValue)
-   , '("elems"  , 'EnvEntry ('MkTy 'False '["array","number","object","strlit","value"])    [JValue])
-   , '("strlit" , 'EnvEntry ('MkTy 'False '[])                                                String)
-   , '("number" , 'EnvEntry ('MkTy 'False '[])                                                JValue)
-   , '("ws"     , 'EnvEntry ('MkTy 'True  '[])                                                    ())
+  '[ '("json"   , 'EnvEntry JValue)
+   , '("value"  , 'EnvEntry JValue)
+   , '("object" , 'EnvEntry JValue)
+   , '("members", 'EnvEntry [(String, JValue)])
+   , '("pair"   , 'EnvEntry (String, JValue))
+   , '("array"  , 'EnvEntry JValue)
+   , '("elems"  , 'EnvEntry [JValue])
+   , '("strlit" , 'EnvEntry String)
+   , '("number" , 'EnvEntry JValue)
+   , '("ws"     , 'EnvEntry ())
    ]
 
 {-# INLINABLE json #-}
-json :: Stream s => Grammar s JsonEnv _ JValue
+json :: Stream s => Grammar s JsonEnv JValue
 json =
   Grammar
     [pegRules|
@@ -196,18 +196,18 @@ json =
 
 -- @(!'"' .)*@ is a compound repetition, so it still yields a @['Char']@ ...
 type QuotedNotEnv =
-  '[ '("qs", 'EnvEntry ('MkTy 'False '["q"]) [String])
-   , '("q" , 'EnvEntry ('MkTy 'False '[])    String)
+  '[ '("qs", 'EnvEntry [String])
+   , '("q" , 'EnvEntry String)
    ]
 
 -- ... whereas @[^"]*@ is a character class and yields a chunk.
 type QuotedClsEnv s =
-  '[ '("qs", 'EnvEntry ('MkTy 'False '["q"]) [s])
-   , '("q" , 'EnvEntry ('MkTy 'False '[])    s)
+  '[ '("qs", 'EnvEntry [s])
+   , '("q" , 'EnvEntry s)
    ]
 
 {-# INLINABLE quotedNot #-}
-quotedNot :: Stream s => Grammar s QuotedNotEnv _ [String]
+quotedNot :: Stream s => Grammar s QuotedNotEnv [String]
 quotedNot =
   Grammar
     [pegRules|
@@ -217,7 +217,7 @@ quotedNot =
     (nt @"qs")
 
 {-# INLINABLE quotedCls #-}
-quotedCls :: Stream s => Grammar s (QuotedClsEnv s) _ [s]
+quotedCls :: Stream s => Grammar s (QuotedClsEnv s) [s]
 quotedCls =
   Grammar
     [pegRules|

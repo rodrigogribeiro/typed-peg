@@ -3,52 +3,55 @@
 {-# LANGUAGE TypeFamilies   #-}
 {-# LANGUAGE TypeOperators  #-}
 
--- | Type-level representation of PEG type information.
+-- | The grammar environment: what a non-terminal's name is bound to.
 --
--- Each non-terminal carries a 'Ty': a pair of its /nullability/
--- (can it match the empty string?) and its /FIRST set/ (which non-terminal
--- names can appear at the head of a derivation?).
--- Both pieces of information are tracked as type-level data and used by the
--- 'PEG.Grammar.Acyclic' constraint to reject left-recursive grammars at
--- compile time.
+-- An environment maps each non-terminal's name to the Haskell type its rule
+-- returns, and to nothing else.  A reference to a non-terminal is checked
+-- against it — @nt \@\"expr\"@ is a type error unless @expr@ is a rule, and it
+-- has whatever type @expr@'s rule has — which is the whole of what the
+-- environment is for.
+--
+-- == What used to be here
+--
+-- Entries used to carry a 'Ty' as well: the rule's nullability and its FIRST
+-- set, the set of non-terminals that can begin a derivation of it.  That is
+-- what made left recursion a type error, by way of a @PEG.Grammar.Acyclic@
+-- constraint that checked no rule was in its own FIRST set.
+--
+-- It was also, measurably, the whole cost of compiling a large grammar.  A
+-- FIRST set grows with the grammar, so an environment of @n@ rules was
+-- @O(n^2)@ type nodes, and each of the @2n@ reference constraints in the
+-- rules had to be solved against it: 64 rules cost GHC 15 s, and the same
+-- environment with a payload nothing reads at all was 15x an environment
+-- without one.  Not reducing the FIRST-set arithmetic was worth nothing by
+-- comparison — it was never the arithmetic, only the size.  See
+-- @bench-compile/@.
+--
+-- Nullability and FIRST sets are still computed, and left recursion is still
+-- rejected before a parser can be built from a left-recursive grammar — by
+-- "PEG.Analysis", at splice time, once, in milliseconds, with the offending
+-- rule and its cycle named.  What changed is that GHC no longer recomputes
+-- them on every compilation of every module that mentions the grammar.  The
+-- cost of that trade is real and is stated in "PEG.Grammar": a 'Rules' value
+-- assembled by hand, without going through a quasi-quoter, is no longer
+-- checked for left recursion by anything.
 module PEG.Type
-  ( Ty (..)
-  , Nullable
-  , First
-  , EnvEntry (..)
+  ( EnvEntry (..)
   , Env
-  , TyOf
   , ResOf
   ) where
 
 import Data.Kind    (Type)
 import GHC.TypeLits (Symbol)
 
--- | A PEG type: nullability flag and FIRST set.
---
--- @'MkTy' n fs@ means the expression may match the empty string iff @n ~ 'True@,
--- and the set of non-terminal names that can begin a derivation is @fs@.
-data Ty = MkTy Bool [Symbol]
-
--- | Extract the nullability flag from a 'Ty'.
-type family Nullable (t :: Ty) :: Bool where
-  Nullable ('MkTy n _) = n
-
--- | Extract the FIRST set (list of non-terminal names) from a 'Ty'.
-type family First (t :: Ty) :: [Symbol] where
-  First ('MkTy _ f) = f
-
--- | An entry in the grammar environment: a 'Ty' paired with its result type.
-data EnvEntry = EnvEntry Ty Type
+-- | An entry in the grammar environment: the type a rule's semantic action
+-- produces.
+data EnvEntry = EnvEntry Type
 
 -- | A grammar environment: a type-level association list mapping non-terminal
 -- names ('Symbol') to their 'EnvEntry'.
 type Env = [(Symbol, EnvEntry)]
 
--- | Extract the 'Ty' from an 'EnvEntry'.
-type family TyOf (e :: EnvEntry) :: Ty where
-  TyOf ('EnvEntry t _) = t
-
 -- | Extract the result type from an 'EnvEntry'.
 type family ResOf (e :: EnvEntry) :: Type where
-  ResOf ('EnvEntry _ a) = a
+  ResOf ('EnvEntry a) = a

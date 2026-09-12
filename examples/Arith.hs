@@ -1,9 +1,8 @@
-{-# LANGUAGE DataKinds             #-}
-{-# LANGUAGE QuasiQuotes           #-}
-{-# LANGUAGE TypeApplications      #-}
-{-# LANGUAGE TypeOperators         #-}
-{-# LANGUAGE PartialTypeSignatures #-}
-{-# OPTIONS_GHC -Wno-partial-type-signatures #-}
+{-# LANGUAGE DataKinds        #-}
+{-# LANGUAGE QuasiQuotes      #-}
+{-# LANGUAGE TemplateHaskell  #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators    #-}
 
 module Arith
   ( Exp (..)
@@ -14,7 +13,7 @@ module Arith
   ) where
 
 import PEG
-import PEG.QQ (pegRules)
+import PEG.QQ (pegGrammar)
 
 data Exp
   = Lit Int
@@ -51,29 +50,29 @@ addOp l ('*', r) = Mul l r
 addOp l ('/', r) = Div l r
 addOp _ (c  , _) = error ("addOp: unexpected operator " ++ show c)
 
-type ArithEnv =
-  '[ '("expr"  , 'EnvEntry ('MkTy 'False '["factor", "number", "term"]) Exp)
-   , '("term"  , 'EnvEntry ('MkTy 'False '["factor", "number"])         Exp)
-   , '("factor", 'EnvEntry ('MkTy 'False '["number"])                   Exp)
-   , '("number", 'EnvEntry ('MkTy 'False '[])                           Exp)
-   ]
-
--- | Polymorphic in the stream, so the same grammar can be run over 'String',
--- 'Data.Text.Text' and 'Data.ByteString.ByteString'.  Note the cost: this is
--- a function of a 'Stream' dictionary rather than a constant, so the compiled
--- parser is not shared between calls.  Bind a monomorphic parser
+-- | The environment, the signature and the grammar are all declared by the
+-- quasi-quoter.  A rule's result type is the one thing the grammar does not
+-- determine, which is what the @:: T@ annotations are for; left recursion and
+-- the rest are checked by 'PEG.Analysis' at the splice.
+--
+-- The annotations are still claims that GHC checks, not assertions:
+-- 'PEG.Grammar.Grammar' demands @Rules s env env@, so an annotation that
+-- disagrees with what the rule body actually returns is a type error here.
+--
+-- Being polymorphic in the stream has a cost: this is a function of a
+-- 'Stream' dictionary rather than a constant, so the compiled parser is not
+-- shared between calls.  Bind a monomorphic parser
 -- (@arithString = parse arith :: String -> Result String Exp@) where that
 -- matters.
-arith :: Stream s => Grammar s ArithEnv _ Exp
-arith =
-  Grammar
-    [pegRules|
-       expr   <- t:term ts:(o:[+-] u:term)* { foldl addOp t ts }
-       term   <- f:factor fs:(o:[*/] g:factor)*
-                   { foldl (\acc (op, r) -> addOp acc (op, r)) f fs }
-       factor <- n:number
-               / '(' e:expr ')'
-               / '-' f:factor { Neg f }
-       number <- ds:[0-9]+ { Lit (read (chunkToString ds) :: Int) }
-    |]
-    (nt @"expr")
+[pegGrammar|
+  %name  arith
+  %start expr
+
+  expr   :: Exp <- t:term ts:(o:[+-] u:term)* { foldl addOp t ts }
+  term   :: Exp <- f:factor fs:(o:[*/] g:factor)*
+                     { foldl (\acc (op, r) -> addOp acc (op, r)) f fs }
+  factor :: Exp <- n:number
+                 / '(' e:expr ')'
+                 / '-' f:factor { Neg f }
+  number :: Exp <- ds:[0-9]+ { Lit (read (chunkToString ds) :: Int) }
+|]

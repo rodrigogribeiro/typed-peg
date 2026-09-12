@@ -18,15 +18,19 @@
 -- materialised from type information at runtime, enabling non-terminal lookup
 -- during parsing.
 --
--- == Why the 'PEG.Type.Ty' is not an index
+-- == Why the class has only the indices it has
 --
--- The witness deliberately does /not/ record the non-terminal's
--- 'PEG.Type.Ty'.  Resolving @KnownMember s env a@ walks @env@ one instance at
--- a time, and every index of the class is carried along — and re-normalised —
--- at each of those steps.  A 'PEG.Type.Ty' carries a FIRST set, so an index
--- for it makes each step cost @O(|env|)@ instead of @O(1)@.  Nothing needs
--- it: 'Here' binds the entry's @ty@ existentially, which is enough to pull
--- the matching rule out of a rule table.
+-- Resolving @KnownMember s env a@ walks @env@ one instance at a time, and
+-- every index of the class is carried along — and re-normalised — at each of
+-- those steps.  An index whose size grows with the grammar therefore makes
+-- each step cost @O(|env|)@ instead of @O(1)@.  Entries used to carry a FIRST
+-- set for exactly that reason, and keeping it out of this class was worth a
+-- large constant; it is now out of the environment altogether (see
+-- "PEG.Type"), so the same discipline is cheap to keep and worth keeping.
+--
+-- Better still is not to search at all: 'PEG.Syntax.ntw' takes the witness
+-- rather than deriving it, which is what a quasi-quoter emits, since a splice
+-- knows every rule's position.
 module PEG.Member
   ( Member (..)
   , KnownMember (..)
@@ -41,7 +45,7 @@ import PEG.Type
 -- | @'Member' s env a@ witnesses that @env@ binds the name @s@ to a rule
 -- returning @a@, and records /where/ in @env@ that binding is.
 data Member (s :: Symbol) (env :: Env) (a :: Type) where
-  Here  :: Member s ('(s, 'EnvEntry ty a) ': rest) a
+  Here  :: Member s ('(s, 'EnvEntry a) ': rest) a
   There :: Member s rest a -> Member s (e ': rest) a
 
 class KnownMember (s :: Symbol) (env :: Env) (a :: Type) where
@@ -62,9 +66,9 @@ instance KnownMemberStep (CmpSymbol s t) s ('(t, e) ': rest) a
 class KnownMemberStep (o :: Ordering) (s :: Symbol) (env :: Env) (a :: Type) where
   memberStep :: Proxy o -> Member s env a
 
--- The entry is taken apart in the instance head, so @ty@ is bound by
--- matching and never has to be threaded through the class.
-instance (s ~ t) => KnownMemberStep 'EQ s ('(t, 'EnvEntry ty a) ': rest) a where
+-- The entry is taken apart in the instance head, so the result type is bound
+-- by matching and never has to be threaded through the class.
+instance (s ~ t) => KnownMemberStep 'EQ s ('(t, 'EnvEntry a) ': rest) a where
   memberStep _ = Here
 
 instance KnownMember s rest a => KnownMemberStep 'LT s ('(t, e) ': rest) a where

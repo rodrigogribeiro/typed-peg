@@ -28,390 +28,99 @@
 module PEG.QQ
   ( pegExpr
   , pegRules
+  , pegGrammar
   ) where
 
 import Control.Monad              (foldM)
-import Data.List                  (nub)
+import Data.List                  (elemIndex, nub)
 import Language.Haskell.TH        (Exp (..), Pat (..), Q)
 import qualified Language.Haskell.TH      as TH
 import Language.Haskell.TH.Quote  (QuasiQuoter (..))
 
 import PEG
-import PEG.QQ.HsExp (parseHsExp)
+import PEG.Analysis  (Diagnostic (..), World (..), analyse, analyseWith,
+                      renderDiagnostic, spannable)
+import PEG.QQ.HsExp  (parseHsExp, parseHsType)
+import PEG.QQ.Syntax (Def (..), Directive (..), Item (..), PExpr (..),
+                      RelS (..), parseDirectives, parseExpr, parseGrammar,
+                      spaces)
 
-data Def = Def String PExpr
-  deriving Show
-
-data Item = Item (Maybe String) PExpr
-  deriving Show
-
-data PExpr
-  = EChoice  [PExpr]
-  | ESeq     [Item] (Maybe String)
-  | EAnd     PExpr
-  | ENot     PExpr
-  | EOpt     PExpr
-  | EStar    PExpr
-  | EPlus    PExpr
-  | EChar    Char
-  | EString  String
-  | EClass   Bool [(Char,Char)]   -- ^ 'True' when the class is negated.
-  | EDot
-  | ENT      String
-  | EIndent  RelS PExpr
-  | EPos     RelS PExpr
-  | EAlign   PExpr
-  deriving Show
-
-data RelS
-  = RGt
-  | RGe
-  | REq
-  | RAny
-  | ROffset Int
-  | RNamed  String
-  deriving Show
-
-type P a = String -> Either String (a, String)
-
-errorAt :: String -> String -> Either String a
-errorAt msg s = Left $ msg ++ " at: " ++ show (take 30 s)
-
-spaces :: String -> String
-spaces []         = []
-spaces ('#':xs)   = spaces (drop 1 (dropWhile (/= '\n') xs))
-spaces (c:xs)
-  | c == ' ' || c == '\t' || c == '\n' || c == '\r' = spaces xs
-  | otherwise = c:xs
-
-tok :: String -> P ()
-tok t s = case stripPrefix t (spaces s) of
-  Just r  -> Right ((), r)
-  Nothing -> errorAt ("expected " ++ show t) s
+-- | Translate a DSL expression, given a way to emit a reference to a
+-- non-terminal.
+--
+-- The two quasi-quoters differ in exactly that: 'pegRules' emits
+-- @nt \@"name"@, which makes GHC search the environment, while 'pegGrammar'
+-- knows every rule's position and emits @ntw \@"name" witness@, which does
+-- not.  Everything else about the translation is shared, so the two cannot
+-- drift.
+translateExprWith :: (String -> Q Exp) -> PExpr -> Q Exp
+translateExprWith ntRef = go
   where
-    stripPrefix [] xs                 = Just xs
-    stripPrefix (p:ps) (x:xs) | p==x  = stripPrefix ps xs
-    stripPrefix _ _                   = Nothing
+    go (EChar c) =
+      [| Term c |]
+    go EDot =
+      [| AnyChar |]
+    go (ENT name) = ntRef name
+    go (EString str)
+      | null str  = [| pureP "" |]
+      | otherwise = [| stringNE str |]
+    go (EClass neg rs)
+      -- A character class becomes a single 'Sat' node holding a compact
+      -- 'PEG.CharSet.CharSet'.  Expanding it into a chain of ordered choices, as
+      -- an earlier version did, made matching one character of @[a-zA-Z0-9_]@
+      -- cost 63 parser steps.
+      | neg       = [| notCharClass rs |]
+      | otherwise = [| charClass rs |]
+    go (EAnd e)  = do
+      e' <- go e
+      [| Not (Not $(pure e')) |]
+    go (ENot e)  = do
+      e' <- go e
+      [| Not $(pure e') |]
+    go (EOpt e)  = do
+      e' <- go e
+      [| opt $(pure e') |]
+    -- A repetition of a single character -- @[a-z]*@, @','+@, @.*@ -- compiles to
+    -- one 'PEG.Syntax.Span' node and produces a /chunk of the input stream/: a
+    -- 'Data.Text.Text' slice rather than a @['Char']@.  Only a bare class, literal
+    -- or dot qualifies; a wrapper such as @[a-z]^>*@ changes the meaning of each
+    -- iteration, so those keep the generic 'Star'.
+    go (EStar (EClass neg rs))
+      | neg       = [| spanOf (notInRanges rs) |]
+      | otherwise = [| spanOf (fromRanges rs) |]
+    go (EStar (EChar c)) = [| spanOf (singletonCS c) |]
+    go (EStar EDot)      = [| spanOf anyCS |]
+    go (EPlus (EClass neg rs))
+      | neg       = [| spanOf1 (notInRanges rs) |]
+      | otherwise = [| spanOf1 (fromRanges rs) |]
+    go (EPlus (EChar c)) = [| spanOf1 (singletonCS c) |]
+    go (EPlus EDot)      = [| spanOf1 anyCS |]
+    go (EStar e) = do
+      e' <- go e
+      [| Star $(pure e') |]
+    go (EPlus e) = do
+      e' <- go e
+      [| plus $(pure e') |]
+    go (EIndent r e) = do
+      e' <- go e
+      [| Indent $(translateRel r) $(pure e') |]
+    go (EPos r e) = do
+      e' <- go e
+      [| Position $(translateRel r) $(pure e') |]
+    go (EAlign e) = do
+      e' <- go e
+      [| Align $(pure e') |]
+    go (EChoice es) = case es of
+      []       -> fail "QQ: empty choice (should be impossible)"
+      (e:rest) -> do
+        e'    <- go e
+        rest' <- mapM go rest
+        foldM (\acc x -> [| $(pure acc) .||. $(pure x) |]) e' rest'
+    go (ESeq items act) = translateSeqWith ntRef items act
 
-ident :: P String
-ident s0 = case spaces s0 of
-  (c:xs) | isIdStart c ->
-    let (rest, leftover) = span isIdCont xs
-    in Right (c:rest, leftover)
-  s -> errorAt "expected identifier" s
-  where
-    isIdStart c = c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-    isIdCont c  = isIdStart c || (c >= '0' && c <= '9')
-
-charLit :: P Char
-charLit s0 = case spaces s0 of
-  ('\'':xs) -> do (c, r1) <- escChar '\'' xs
-                  case r1 of
-                    ('\'':r2) -> Right (c, r2)
-                    _         -> errorAt "expected closing '" r1
-  s         -> errorAt "expected character literal" s
-
-strLit :: P String
-strLit s0 = case spaces s0 of
-  ('"':xs) -> loop xs
-  s        -> errorAt "expected string literal" s
-  where
-    loop ('"':r) = Right ("", r)
-    loop r0      = do (c, r1) <- escChar '"' r0
-                      (cs, r2) <- loop r1
-                      pure (c:cs, r2)
-
-escChar :: Char -> P Char
-escChar _ ('\\':e:xs) = case e of
-  'n'  -> Right ('\n', xs)
-  't'  -> Right ('\t', xs)
-  'r'  -> Right ('\r', xs)
-  '\\' -> Right ('\\', xs)
-  '\'' -> Right ('\'', xs)
-  '"'  -> Right ('"',  xs)
-  '['  -> Right ('[',  xs)
-  ']'  -> Right (']',  xs)
-  '0'  -> Right ('\0', xs)
-  '^'  -> Right ('^',  xs)
-  _    -> errorAt ("unknown escape \\" ++ [e]) xs
-escChar stopC (c:xs)
-  | c == stopC = errorAt "unexpected close quote" (c:xs)
-  | otherwise  = Right (c, xs)
-escChar _ [] = Left "unexpected end of input in literal"
-
--- | A character class.  A leading @^@ negates it, as in POSIX; write
--- @[\\^]@ for a class containing the caret itself.
-classLit :: P (Bool, [(Char, Char)])
-classLit s0 = case spaces s0 of
-  ('[':'^':xs) -> do
-    (rs, r) <- loop xs
-    if null rs
-      then errorAt "empty negated character class" s0
-      else Right ((True, rs), r)
-  ('[':xs)     -> do
-    (rs, r) <- loop xs
-    Right ((False, rs), r)
-  s            -> errorAt "expected character class" s
-  where
-    loop (']':r) = Right ([], r)
-    loop []      = Left "unterminated character class"
-    loop r0      = do
-      (c1, r1) <- escChar ']' r0
-      case r1 of
-        ('-':']':r2) -> pure ([(c1, c1), ('-', '-')], r2)
-        ('-':r2) ->
-          do (c2, r3) <- escChar ']' r2
-             (rs, r4) <- loop r3
-             pure ((c1, c2) : rs, r4)
-        _ ->
-          do (rs, r2) <- loop r1
-             pure ((c1, c1) : rs, r2)
-
-actionLit :: P String
-actionLit s0 = case spaces s0 of
-  ('{':xs) -> go (1 :: Int) ' ' [] xs
-  s        -> errorAt "expected a semantic action" s
-  where
-    go _ _ _ [] = Left "unterminated semantic action: missing '}'"
-    go n prev acc s = case s of
-      ('{':'-':r) -> do
-        (com, r') <- blockComment (1 :: Int) r
-        go n '}' (revApp ("{-" ++ com) acc) r'
-      ('"':r) -> do
-        (str, r') <- literalBody '"' r
-        go n '"' (revApp ('"' : str) acc) r'
-      ('\'':r) | not (isIdChar prev) -> do
-        (ch, r') <- literalBody '\'' r
-        go n '\'' (revApp ('\'' : ch) acc) r'
-      ('{':r) -> go (n + 1) '{' ('{' : acc) r
-      ('}':r) | n == 1    -> Right (reverse acc, r)
-              | otherwise -> go (n - 1) '}' ('}' : acc) r
-      (c:_) | c `elem` symChars ->
-        let (sym, r) = span (`elem` symChars) s
-        in if all (== '-') sym && length sym >= 2
-             then let (line, r') = span (/= '\n') r
-                  in go n '\n' (revApp (sym ++ line) acc) r'
-             else go n (last sym) (revApp sym acc) r
-      (c:r) -> go n c (c : acc) r
-
-    isIdChar c = c == '_' || c == '\''
-              || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-              || (c >= '0' && c <= '9')
-
-    literalBody _ [] = Left "unterminated literal in a semantic action"
-    literalBody q ('\\':c:r)     = do (b, r') <- literalBody q r
-                                      Right ('\\' : c : b, r')
-    literalBody q (c:r) | c == q = Right ([c], r)
-    literalBody q (c:r)          = do (b, r') <- literalBody q r
-                                      Right (c : b, r')
-
-    blockComment _ []              = Left "unterminated {- -} comment in a semantic action"
-    blockComment k ('-':'}':r)
-      | k == 1                     = Right ("-}", r)
-      | otherwise                  = do (c, r') <- blockComment (k - 1) r
-                                        Right ("-}" ++ c, r')
-    blockComment k ('{':'-':r)     = do (c, r') <- blockComment (k + 1) r
-                                        Right ("{-" ++ c, r')
-    blockComment k (c:r)           = do (c', r') <- blockComment k r
-                                        Right (c : c', r')
-
-    revApp xs acc = reverse xs ++ acc
-
-    symChars = "!#$%&*+./<=>?@\\^|-~:"
-
-parseExpr :: P PExpr
-parseExpr s0 = do
-  (e1, s1) <- parseSeq s0
-  loop [e1] s1
-  where
-    loop acc s = case tok "/" s of
-      Right (_, s') -> do (e, s'') <- parseSeq s'
-                          loop (e:acc) s''
-      Left _        -> case reverse acc of
-        [x] -> Right (x, s)
-        xs  -> Right (EChoice xs, s)
-
-parseSeq :: P PExpr
-parseSeq s0 = loop [] s0
-  where
-    loop acc s = case parseLabelled s of
-      Right (it, s') -> loop (it:acc) s'
-      Left _         -> case actionLit s of
-        Right (act, s') -> Right (ESeq (reverse acc) (Just act), s')
-        Left _          -> Right (ESeq (reverse acc) Nothing,    s)
-
-parseLabelled :: P Item
-parseLabelled s = case label s of
-  Just (l, s1) -> do (e, s2) <- parsePrefix s1
-                     pure (Item (Just l) e, s2)
-  Nothing      -> do (e, s1) <- parsePrefix s
-                     pure (Item Nothing e, s1)
-  where
-    label s' = case ident s' of
-      Right (name, s1) -> case tok ":" s1 of
-        Right (_, s2) -> Just (name, s2)
-        Left _        -> Nothing
-      Left _ -> Nothing
-
-parsePrefix :: P PExpr
-parsePrefix s = case tok "&" s of
-  Right (_, s') -> do (e, s'') <- parseSuffix s'; pure (EAnd e, s'')
-  Left _        -> case tok "!" s of
-    Right (_, s') -> do (e, s'') <- parseSuffix s'; pure (ENot e, s'')
-    Left _        -> parseSuffix s
-
-parseSuffix :: P PExpr
-parseSuffix s = do
-  (p, s1) <- parsePrimary s
-  loop p s1
-  where
-    loop p s1 = case tok "?" s1 of
-      Right (_, s2) -> loop (EOpt p) s2
-      Left _ -> case tok "*" s1 of
-        Right (_, s2) -> loop (EStar p) s2
-        Left _ -> case tok "+" s1 of
-          Right (_, s2) -> loop (EPlus p) s2
-          Left _ -> case indented EIndent "^" p s1 of
-            Right (p', s2) -> loop p' s2
-            Left _ -> case indented EPos "_" p s1 of
-              Right (p', s2) -> loop p' s2
-              Left _         -> Right (p, s1)
-
-    indented con marker p s1 = do
-      (_, s2) <- tok marker s1
-      (r, s3) <- parseRel s2
-      pure (con r p, s3)
-
-parseRel :: P RelS
-parseRel s = case tok ">=" s of
-  Right (_, s1) -> Right (RGe, s1)
-  Left _ -> case tok ">" s of
-    Right (_, s1) -> Right (RGt, s1)
-    Left _ -> case tok "=" s of
-      Right (_, s1) -> Right (REq, s1)
-      Left _ -> case tok "~" s of
-        Right (_, s1) -> Right (RAny, s1)
-        Left _ -> case tok "@" s of
-          Right (_, s1) -> do (name, s2) <- ident s1
-                              pure (RNamed name, s2)
-          Left _ -> case tok "+" s of
-            Right (_, s1) -> case span isDigit (spaces s1) of
-              ([], _)     -> errorAt "expected a number after '+'" s1
-              (ds, s2)    -> Right (ROffset (read ds), s2)
-            Left _ -> errorAt "expected an indentation relation" s
-  where
-    isDigit c = c >= '0' && c <= '9'
-
-parsePrimary :: P PExpr
-parsePrimary s =
-  case tok "(" s of
-    Right (_, s1) -> do (e, s2) <- parseExpr s1
-                        (_, s3) <- tok ")" s2
-                        pure (e, s3)
-    Left _ -> case parseAlign s of
-     Right r -> Right r
-     Left _ -> case tok "." s of
-      Right (_, s1) -> Right (EDot, s1)
-      Left _ -> case charLit s of
-        Right (c, s1) -> Right (EChar c, s1)
-        Left _ -> case strLit s of
-          Right (cs, s1) -> Right (EString cs, s1)
-          Left _ -> case classLit s of
-            Right ((neg, rs), s1) -> Right (EClass neg rs, s1)
-            Left _ -> case ident s of
-              Right (name, s1) ->
-                case tok "<-" s1 of
-                  Right _  -> errorAt "definition where expression expected" s
-                  Left _   -> Right (ENT name, s1)
-              Left _ -> errorAt "expected primary expression" s
-
-parseAlign :: P PExpr
-parseAlign s = do
-  (_, s1) <- tok "|" s
-  (e, s2) <- parseExpr s1
-  if isEmptyExpr e
-    then errorAt "empty alignment: write |e| with a non-empty e" s
-    else do (_, s3) <- tok "|" s2
-            pure (EAlign e, s3)
-  where
-    isEmptyExpr (ESeq [] Nothing) = True
-    isEmptyExpr _                 = False
-
-parseGrammar :: P [Def]
-parseGrammar s0 = loop [] s0
-  where
-    loop acc s = case ident s of
-      Left _ -> case spaces s of
-        [] -> Right (reverse acc, "")
-        s' -> errorAt "expected definition or end of input" s'
-      Right (name, s1) -> do
-        (_, s2)  <- tok "<-" s1
-        (e, s3)  <- parseExpr s2
-        loop (Def name e : acc) s3
-
-translateExpr :: PExpr -> Q Exp
-translateExpr (EChar c) =
-  [| Term c |]
-translateExpr EDot =
-  [| AnyChar |]
-translateExpr (ENT name) =
-  pure $ TH.AppTypeE (TH.VarE 'nt) (TH.LitT (TH.StrTyLit name))
-translateExpr (EString s)
-  | null s    = [| pureP "" |]
-  | otherwise = [| stringNE s |]
-translateExpr (EClass neg rs)
-  -- A character class becomes a single 'Sat' node holding a compact
-  -- 'PEG.CharSet.CharSet'.  Expanding it into a chain of ordered choices, as
-  -- an earlier version did, made matching one character of @[a-zA-Z0-9_]@
-  -- cost 63 parser steps.
-  | neg       = [| notCharClass rs |]
-  | otherwise = [| charClass rs |]
-translateExpr (EAnd e)  = do
-  e' <- translateExpr e
-  [| Not (Not $(pure e')) |]
-translateExpr (ENot e)  = do
-  e' <- translateExpr e
-  [| Not $(pure e') |]
-translateExpr (EOpt e)  = do
-  e' <- translateExpr e
-  [| opt $(pure e') |]
--- A repetition of a single character -- @[a-z]*@, @','+@, @.*@ -- compiles to
--- one 'PEG.Syntax.Span' node and produces a /chunk of the input stream/: a
--- 'Data.Text.Text' slice rather than a @['Char']@.  Only a bare class, literal
--- or dot qualifies; a wrapper such as @[a-z]^>*@ changes the meaning of each
--- iteration, so those keep the generic 'Star'.
-translateExpr (EStar (EClass neg rs))
-  | neg       = [| spanOf (notInRanges rs) |]
-  | otherwise = [| spanOf (fromRanges rs) |]
-translateExpr (EStar (EChar c)) = [| spanOf (singletonCS c) |]
-translateExpr (EStar EDot)      = [| spanOf anyCS |]
-translateExpr (EPlus (EClass neg rs))
-  | neg       = [| spanOf1 (notInRanges rs) |]
-  | otherwise = [| spanOf1 (fromRanges rs) |]
-translateExpr (EPlus (EChar c)) = [| spanOf1 (singletonCS c) |]
-translateExpr (EPlus EDot)      = [| spanOf1 anyCS |]
-translateExpr (EStar e) = do
-  e' <- translateExpr e
-  [| Star $(pure e') |]
-translateExpr (EPlus e) = do
-  e' <- translateExpr e
-  [| plus $(pure e') |]
-translateExpr (EIndent r e) = do
-  e' <- translateExpr e
-  [| Indent $(translateRel r) $(pure e') |]
-translateExpr (EPos r e) = do
-  e' <- translateExpr e
-  [| Position $(translateRel r) $(pure e') |]
-translateExpr (EAlign e) = do
-  e' <- translateExpr e
-  [| Align $(pure e') |]
-translateExpr (EChoice es) = case es of
-  []       -> fail "QQ: empty choice (should be impossible)"
-  (e:rest) -> do
-    e'    <- translateExpr e
-    rest' <- mapM translateExpr rest
-    foldM (\acc x -> [| $(pure acc) .||. $(pure x) |]) e' rest'
-translateExpr (ESeq items act) = translateSeq items act
+-- | Emit @nt \@"name"@: the environment is searched by the type checker.
+ntByName :: String -> Q Exp
+ntByName name = pure (TH.AppTypeE (TH.VarE 'nt) (TH.LitT (TH.StrTyLit name)))
 
 translateRel :: RelS -> Q Exp
 translateRel RGt          = [| gtR |]
@@ -421,8 +130,8 @@ translateRel RAny         = [| anyR |]
 translateRel (ROffset n)  = [| offsetR n |]
 translateRel (RNamed nm)  = pure (TH.VarE (TH.mkName nm))
 
-translateSeq :: [Item] -> Maybe String -> Q Exp
-translateSeq items act = do
+translateSeqWith :: (String -> Q Exp) -> [Item] -> Maybe String -> Q Exp
+translateSeqWith ntRef items act = do
   let labels = [ l | Item (Just l) _ <- items ]
   case duplicates labels of
     (l:_) -> fail ("QQ: the label " ++ show l
@@ -433,7 +142,7 @@ translateSeq items act = do
     Just src -> case parseHsExp src of
       Right e  -> pure e
       Left err -> fail ("QQ: in the semantic action {" ++ src ++ "}: " ++ err)
-  es <- mapM (\(Item _ e) -> translateExpr e) items
+  es <- mapM (\(Item _ e) -> translateExprWith ntRef e) items
   case es of
     []       -> [| pureP $(pure body) |]
     (e:rest) -> do
@@ -450,11 +159,11 @@ translateSeq items act = do
 
     duplicates xs = [ x | x <- nub xs, length (filter (== x) xs) > 1 ]
 
-translateRules :: [Def] -> Q Exp
-translateRules [] = [| RNil |]
-translateRules (Def name expr : rest) = do
-  body  <- translateExpr expr
-  rest' <- translateRules rest
+translateRules :: (String -> Q Exp) -> [Def] -> Q Exp
+translateRules _ [] = [| RNil |]
+translateRules ntRef (Def name _ expr : rest) = do
+  body  <- translateExprWith ntRef expr
+  rest' <- translateRules ntRef rest
   let nameProxy = TH.AppTypeE (TH.ConE 'Name) (TH.LitT (TH.StrTyLit name))
   [| RCons $(pure nameProxy) $(pure body) $(pure rest') |]
 
@@ -474,7 +183,7 @@ pegExprExp :: String -> Q Exp
 pegExprExp src = case parseExpr src of
   Left err     -> fail ("pegExpr: parse error: " ++ err)
   Right (e, rest) -> case spaces rest of
-    []  -> translateExpr e
+    []  -> translateExprWith ntByName e
     leftover -> fail ("pegExpr: unconsumed input: " ++ show (take 30 leftover))
 
 -- | Quasi-quoter for a set of named PEG rules.
@@ -505,4 +214,288 @@ pegRules = QuasiQuoter
 pegRulesExp :: String -> Q Exp
 pegRulesExp src = case parseGrammar src of
   Left err -> fail ("pegRules: parse error: " ++ err)
-  Right (defs, _) -> translateRules defs
+  Right (defs, _) ->
+    -- Left recursion, a nullable repetition and a duplicate rule, reported
+    -- here because nothing else reports them any more: the FIRST sets that
+    -- @Acyclic@ used to check are no longer in the types.  The block is
+    -- analysed 'Open' because it may be only part of a rule set — see
+    -- 'PEG.Analysis.World' — so a cycle that closes across two blocks is
+    -- caught by neither this nor GHC.  'pegGrammar' has no such gap.
+    case analyseWith Open defs of
+      Left ds -> fail ("pegRules:\n" ++ unlines
+                         -- six spaces, so the body lines up under the bullet
+                         -- GHC puts in front of the first line
+                         [ "      " ++ l | d <- ds, l <- lines (renderDiagnostic d) ])
+      Right _ -> translateRules ntByName defs
+
+--------------------------------------------------------------------------------
+-- pegGrammar: a whole grammar, environment included
+--------------------------------------------------------------------------------
+
+-- | Quasi-quoter for a complete grammar.
+--
+-- Unlike 'pegRules', which is one part of a rule set and can be combined with
+-- another, this owns the whole grammar.  Two things follow from that.
+--
+-- It knows every rule's position in the environment, so it emits
+-- 'PEG.Syntax.ntw' and the membership proof rather than @nt@ and a
+-- 'PEG.Member.KnownMember' search.  That is worth about 2.6x on the compile
+-- time of a 64-rule grammar; see @bench-compile/@.
+--
+-- And it knows the whole grammar is in front of it, so a reference to a name
+-- no rule defines is an error at the splice rather than a type error later.
+--
+-- == In expression position
+--
+-- @
+-- arith :: Stream s => Grammar s ArithEnv _ Exp
+-- arith = [pegGrammar|
+--           %start expr
+--           expr   \<- t:term ts:(o:[+-] u:term)* { foldl addOp t ts }
+--           term   \<- ...
+--         |]
+-- @
+--
+-- == In declaration position
+--
+-- Give each rule its result type and the environment need not be written at
+-- all — the quasi-quoter declares it, along with the grammar and its
+-- signature:
+--
+-- @
+-- [pegGrammar|
+--   %name  arith
+--   %start expr
+--   expr   :: Exp \<- t:term ts:(o:[+-] u:term)* { foldl addOp t ts }
+--   term   :: Exp \<- ...
+-- |]
+-- @
+--
+-- declares @type ArithEnv s@, @arith :: Stream s => Grammar s (ArithEnv s) Exp@
+-- and @arith@ itself.  An entry of the environment is a rule's name and the
+-- type it returns; the type is the one thing the grammar does not determine,
+-- which is what the annotations are for.
+--
+-- == Directives
+--
+-- [@%start@] Required.  The start expression: a non-terminal's name, or any
+--            PEG expression over the grammar's rules.
+-- [@%name@]  Required in declaration position: the name to bind the grammar
+--            to.
+-- [@%env@]   The name of the generated environment synonym.  Defaults to the
+--            grammar's name, capitalised, with @Env@ appended.
+-- [@%stream@] The stream type.  Defaults to a variable @s@ with a
+--            'PEG.Stream.Stream' constraint.
+-- [@%result@] The grammar's result type, for the rare start expression whose
+--            type cannot be read off the rules — one with a semantic action
+--            of its own.
+pegGrammar :: QuasiQuoter
+pegGrammar = QuasiQuoter
+  { quoteExp  = pegGrammarExp
+  , quoteDec  = pegGrammarDec
+  , quotePat  = \_ -> fail "pegGrammar: cannot be used as a pattern"
+  , quoteType = \_ -> fail "pegGrammar: cannot be used as a type"
+  }
+
+-- | A grammar that has been parsed and checked: the pieces both forms need.
+--
+-- The analysis's own result is not among them.  It used to be — the FIRST
+-- sets it computes were written into the environment — and now that entries
+-- carry only a result type, running it is entirely a matter of the
+-- diagnostics it raises.  It is still run, and it is now the only thing that
+-- rejects a left-recursive grammar; see "PEG.Grammar".
+data GrammarSrc = GrammarSrc
+  { gsDirs  :: [Directive]
+  , gsDefs  :: [Def]
+  , gsStart :: PExpr
+  }
+
+gsNames :: GrammarSrc -> [String]
+gsNames gs = [ n | Def n _ _ <- gsDefs gs ]
+
+-- | Parse the header, the rules and the start expression, and run the
+-- analysis over all of them.
+parseGrammarSrc :: String -> Q GrammarSrc
+parseGrammarSrc src = do
+  (dirs, afterDirs) <- orFail (parseDirectives src)
+  -- A mistyped directive is silent otherwise: @%strt expr@ would be reported
+  -- as a missing %start, which points at the wrong thing.
+  case [ k | Directive k _ <- dirs, k `notElem` knownDirectives ] of
+    []    -> pure ()
+    (k:_) -> fail ("pegGrammar: unknown directive %" ++ k
+                     ++ "\n      known directives are "
+                     ++ unwords [ '%' : d | d <- knownDirectives ])
+  (defs, leftover)  <- orFail (parseGrammar afterDirs)
+  case spaces leftover of
+    [] -> pure ()
+    r  -> fail ("pegGrammar: unconsumed input: " ++ show (take 30 r))
+  startSrc <- case directive "start" dirs of
+    Just v  -> pure v
+    Nothing -> fail "pegGrammar: no %start directive"
+  (start0, startRest) <- orFail (parseExpr startSrc)
+  let start = normaliseStart start0
+  case spaces startRest of
+    [] -> pure ()
+    r  -> fail ("pegGrammar: unconsumed input in %start: " ++ show (take 30 r))
+  -- The start expression is a rule body in every way that matters here, so it
+  -- is checked with the others: a name it references and no rule defines is
+  -- reported the same way.
+  case analyse (Def "%start" Nothing start : defs) of
+    Left ds  -> fail ("pegGrammar:\n" ++ unlines
+                        [ "      " ++ l
+                        | d <- ds, l <- lines (renderDiagnostic (unstart d)) ])
+    Right _  -> pure ()
+  pure (GrammarSrc dirs defs start)
+  where
+    orFail = either (\e -> fail ("pegGrammar: parse error: " ++ e)) pure
+
+    -- The start expression is not a rule, so it should not be named as one.
+    unstart (LeftRecursive n p)  = LeftRecursive (rename n) (map rename p)
+    unstart (NullableStar n)     = NullableStar (rename n)
+    unstart (UndefinedNT n ns)   = UndefinedNT n (filter (/= "%start") ns)
+    unstart (DuplicateRule n)    = DuplicateRule (rename n)
+    rename n = if n == "%start" then "the start expression" else n
+
+-- | @%start expr@ means the expression @expr@, not a one-item sequence whose
+-- value is discarded.
+--
+-- Inside a rule, @r \<- term@ with neither a label nor an action does return
+-- @()@ — that is the DSL's rule and it stays.  But a start expression is not
+-- a rule: it is the @(nt \@"expr")@ that used to be written out by hand next
+-- to the rule set, and that returned the rule's value.  A start with a label
+-- or an action of its own is left alone; only a lone unlabelled item is
+-- unwrapped.
+normaliseStart :: PExpr -> PExpr
+normaliseStart (ESeq [Item Nothing e] Nothing) = e
+normaliseStart e                               = e
+
+knownDirectives :: [String]
+knownDirectives = ["start", "name", "env", "stream", "result"]
+
+directive :: String -> [Directive] -> Maybe String
+directive k ds = case [ v | Directive k' v <- ds, k' == k ] of
+  (v:_) -> Just v
+  []    -> Nothing
+
+-- | Emit @ntw \@"name" (There (... Here))@: the proof instead of the search.
+ntByWitness :: [String] -> String -> Q Exp
+ntByWitness names name = case elemIndex name names of
+  Nothing -> fail ("pegGrammar: undefined non-terminal: " ++ name)
+  Just k  -> pure (TH.AppE (TH.AppTypeE (TH.VarE 'ntw)
+                                        (TH.LitT (TH.StrTyLit name)))
+                           (witness k))
+  where
+    witness 0 = TH.ConE 'Here
+    witness k = TH.AppE (TH.ConE 'There) (witness (k - 1))
+
+pegGrammarExp :: String -> Q Exp
+pegGrammarExp src = do
+  gs <- parseGrammarSrc src
+  let ntRef = ntByWitness (gsNames gs)
+  rules <- translateRules ntRef (gsDefs gs)
+  start <- translateExprWith ntRef (gsStart gs)
+  [| Grammar $(pure rules) $(pure start) |]
+
+pegGrammarDec :: String -> Q [TH.Dec]
+pegGrammarDec src = do
+  gs <- parseGrammarSrc src
+  gname <- case directive "name" (gsDirs gs) of
+    Just v  -> pure (TH.mkName v)
+    Nothing -> fail "pegGrammar: no %name directive, which declaring a \
+                    \grammar needs"
+  let baseName = maybe "" id (directive "name" (gsDirs gs))
+      envName  = TH.mkName (maybe (capitalise baseName ++ "Env") id
+                                  (directive "env" (gsDirs gs)))
+      streamV  = TH.mkName "s"
+  streamT <- case directive "stream" (gsDirs gs) of
+    Nothing -> pure (TH.VarT streamV)
+    Just t  -> either (\e -> fail ("pegGrammar: in %stream: " ++ e)) pure
+                      (parseHsType t)
+  anns <- mapM (resultAnnotation gname) (gsDefs gs)
+  let envRhs = promotedList [ envEntry n ty | (n, ty) <- anns ]
+  startRes <- case directive "result" (gsDirs gs) of
+    Just t  -> either (\e -> fail ("pegGrammar: in %result: " ++ e)) pure
+                      (parseHsType t)
+    Nothing -> case resultTypeOf streamT anns (gsStart gs) of
+      Just t  -> pure t
+      Nothing -> fail "pegGrammar: cannot tell what the start expression \
+                      \returns.\n  It has a semantic action of its own; state \
+                      \its type with %result."
+  let envApplied = TH.AppT (TH.ConT envName) streamT
+      grammarTy  = foldl TH.AppT (TH.ConT ''Grammar)
+                     [streamT, envApplied, startRes]
+      sigTy = case directive "stream" (gsDirs gs) of
+        Just _  -> grammarTy
+        Nothing -> TH.ForallT [TH.PlainTV streamV TH.SpecifiedSpec]
+                              [TH.AppT (TH.ConT ''Stream) (TH.VarT streamV)]
+                              grammarTy
+  body <- pegGrammarExp src
+  pure [ TH.TySynD envName [TH.PlainTV streamV TH.BndrReq] envRhs
+       , TH.SigD gname sigTy
+       , TH.FunD gname [TH.Clause [] (TH.NormalB body) []]
+       ]
+  where
+    capitalise []     = []
+    capitalise (c:cs) = toUpper c : cs
+    toUpper c = if c >= 'a' && c <= 'z' then toEnum (fromEnum c - 32) else c
+
+-- | A rule's declared result type, which declaring an environment needs.
+resultAnnotation :: TH.Name -> Def -> Q (String, TH.Type)
+resultAnnotation gname (Def n ann _) = case ann of
+  Nothing  -> fail ("pegGrammar: the rule " ++ n ++ " has no result type.\n\
+                    \  Declaring " ++ show gname ++ " means writing the \
+                    \environment down, and a rule's\n  result type is the one \
+                    \thing the grammar does not say: write\n    " ++ n
+                    ++ " :: T <- ...")
+  Just src -> case parseHsType src of
+    Left e  -> fail ("pegGrammar: in the result type of " ++ n ++ ": " ++ e)
+    Right t -> pure (n, t)
+
+-- | What the start expression returns, read off the rules' declared types.
+--
+-- This follows @translateSeqWith@: a sequence with no semantic action returns
+-- its labelled items, one of them bare and several as a tuple.  A sequence
+-- /with/ an action returns whatever the action does, which is Haskell and so
+-- not knowable here — hence the 'Maybe', and the @%result@ directive.
+resultTypeOf :: TH.Type -> [(String, TH.Type)] -> PExpr -> Maybe TH.Type
+resultTypeOf streamT anns = go
+  where
+    go (ENT n)       = lookup n anns
+    go (EChar _)     = Just (TH.ConT ''Char)
+    go EDot          = Just (TH.ConT ''Char)
+    go (EClass _ _)  = Just (TH.ConT ''Char)
+    go (EString _)   = Just (TH.ConT ''String)
+    go (EAnd _)      = Just (TH.TupleT 0)
+    go (ENot _)      = Just (TH.TupleT 0)
+    go (EOpt e)      = TH.AppT (TH.ConT ''Maybe) <$> go e
+    go (EStar e)     = rep e
+    go (EPlus e)     = rep e
+    go (EIndent _ e) = go e
+    go (EPos _ e)    = go e
+    go (EAlign e)    = go e
+    go (EChoice es)  = firstJust (map go es)
+    go (ESeq _ (Just _)) = Nothing
+    go (ESeq items Nothing) = case [ e | Item (Just _) e <- items ] of
+      []  -> Just (TH.TupleT 0)
+      [e] -> go e
+      es  -> foldl TH.AppT (TH.TupleT (length es)) <$> mapM go es
+
+    rep e | spannable e = Just streamT
+          | otherwise   = TH.AppT TH.ListT <$> go e
+
+    firstJust xs = case [ x | Just x <- xs ] of
+      (x:_) -> Just x
+      []    -> Nothing
+
+--------------------------------------------------------------------------------
+-- Building the environment's type
+--------------------------------------------------------------------------------
+
+promotedList :: [TH.Type] -> TH.Type
+promotedList = foldr (\x acc -> TH.AppT (TH.AppT TH.PromotedConsT x) acc)
+                     TH.PromotedNilT
+
+envEntry :: String -> TH.Type -> TH.Type
+envEntry n res =
+  TH.AppT (TH.AppT (TH.PromotedTupleT 2) (TH.LitT (TH.StrTyLit n)))
+          (TH.AppT (TH.PromotedT 'EnvEntry) res)

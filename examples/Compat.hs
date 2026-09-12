@@ -1,9 +1,7 @@
 {-# LANGUAGE OverloadedStrings      #-}
-{-# LANGUAGE PartialTypeSignatures  #-}
 {-# LANGUAGE QuasiQuotes            #-}
 {-# LANGUAGE RankNTypes             #-}
 {-# LANGUAGE ScopedTypeVariables    #-}
-{-# OPTIONS_GHC -Wno-partial-type-signatures #-}
 
 -- | A differential test: it renders the complete 'Result' (value, consumed
 -- prefix and remaining suffix) for a fixed battery of inputs.
@@ -81,11 +79,11 @@ optSets =
 -- reaches them.  @!c*@ can never succeed, because the star matches the empty
 -- run.
 type SpanEnv s =
-  '[ '("digits", 'EnvEntry ('MkTy 'True  '[]) s)
-   , '("digits1", 'EnvEntry ('MkTy 'False '[]) s)
+  '[ '("digits", 'EnvEntry s)
+   , '("digits1", 'EnvEntry s)
    ]
 
-spanG :: Stream s => Grammar s (SpanEnv s) _ (s, s)
+spanG :: Stream s => Grammar s (SpanEnv s) (s, s)
 spanG =
   Grammar
     [pegRules|
@@ -96,10 +94,10 @@ spanG =
 
 -- @!'x'+ .@ accepts any character that is not an @x@; @!'x'* .@ accepts
 -- nothing at all.
-notSpan1G :: Stream s => Grammar s '[] _ Char
+notSpan1G :: Stream s => Grammar s '[] Char
 notSpan1G = Grammar RNil [pegExpr| !'x'+ c:. |]
 
-notSpanG :: Stream s => Grammar s '[] _ Char
+notSpanG :: Stream s => Grammar s '[] Char
 notSpanG = Grammar RNil [pegExpr| !'x'* c:. |]
 
 spanCases :: [String]

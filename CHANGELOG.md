@@ -1,6 +1,208 @@
 # Changelog
 
-## Unreleased — compile time of large grammars
+## Unreleased
+
+### Breaking. The environment no longer carries FIRST sets
+
+An entry of a grammar's environment was a rule's nullability, its FIRST set
+and its result type.  It is now the result type:
+
+```haskell
+type CalcEnv =
+  '[ '("expr" , 'EnvEntry Expr)     -- was 'EnvEntry ('MkTy 'False '["atom", "term", "unary"]) Expr
+   , '("term" , 'EnvEntry Expr)
+   , '("atom" , 'EnvEntry Expr)
+   ]
+```
+
+`PExp` loses its `ty` index and is now `PExp s env a`; `Grammar` is
+`Grammar s env a`.  `PEG.Type.Ty`, `Nullable`, `First`, `TyOf`,
+`PEG.Syntax.SeqTy`, `ChoiceTy`, `NTTy`, `NTGo`, `PEG.Grammar.Acyclic` and the
+sorted-set families in `PEG.TyLevel` — `Union`, `Elem`, `ConsIfAbsent`, `If`,
+`And`, `Or`, `SymEq` — are gone.  A grammar written with `pegGrammar` needs no
+change; one that writes its environment by hand needs the `'MkTy` component
+deleted from each entry and the `ty` argument deleted from its signatures.
+
+**Why.**  The FIRST sets in the environment were the entire cost of compiling
+a large grammar, and the measurement that says so is that *not computing them
+was worth nothing*.  A mode that kept the large environment but handed GHC
+every rule's index as a literal, so that `SeqTy`, `ChoiceTy` and `Union` were
+never reduced, ran no faster than one that reduced them all.  What cost was
+the environment being `O(N^2)` type nodes and each of the `2N` reference
+constraints being solved against it: in the micro-benchmark, giving each entry
+a payload that no type family ever reads takes `N = 64` from 0.77 s to 11.8 s
+and exhausts 8 GB at `N = 96`.
+
+**What it bought**, on a grammar of `N` mutually referring rules
+(`bench-compile/`, `ghc -fno-code`):
+
+| N | before | after | |
+|---|---|---|---|
+| 64, environment by hand | 15.15 s | 1.99 s | 7.6x |
+| 64, through `pegGrammar` | 7.23 s | 1.19 s | 6.1x |
+| 128, through `pegGrammar` | — | 5.28 s | |
+
+The curve changed and not only the constant: doubling the grammar from 32 to
+64 rules used to cost about 8x and now costs 3.3x, so what was cubic in the
+number of rules is closer to quadratic.  A 128-rule grammar through
+`pegGrammar` now costs less than a 64-rule one did.
+
+Two shapes that used to differ by 4.9x — a rule beginning with a non-terminal
+against one beginning with a terminal — are now indistinguishable, which is
+the check that the cost is gone rather than moved.
+
+**Leaving the environment to inference now works.**  `Grammar s _ a` with a
+wildcard environment used to be unusable: GHC inferred entries full of
+unreduced type-family applications and was past 24 GB of heap at `N = 16`.
+There are none left to leave unreduced, and it is now within noise of writing
+the environment out — 2.25 s at `N = 64`.  A hand-written rule set need not
+declare an environment at all.
+
+**What this gives up.**  Left recursion was a type error, checked on every
+compilation by `Acyclic`.  It is now checked once, by `PEG.Analysis`, when
+`pegRules` or `pegGrammar` splices the grammar — which is where it was already
+reported, with the rule and its cycle named, and which is the message you
+actually saw.  What is no longer checked at all:
+
+- A `Rules` chain assembled by hand from `RCons`, with no quasi-quoter
+  involved.  A rule that begins with itself compiles and loops.
+- Left recursion that closes *across* two `pegRules` blocks spliced together.
+  A block is analysed open-world, since `RCons` lets two be combined, and
+  `Acyclic` used to be the backstop.  Writing the grammar as a single
+  `pegGrammar` closes the gap: it is closed-world.
+
+`Star` no longer demands a non-nullable operand, for the same reason; a
+nullable repetition is reported by `PEG.Analysis`, and by nothing at all if
+the `Star` is built by hand.
+
+**What this makes simpler.**  A combinator over expressions is now an ordinary
+polymorphic function.  What had to be written
+
+```haskell
+lexeme :: PExp s env ty a -> PExp s env (SeqTy ty ('MkTy 'True '[])) a
+```
+
+is `PExp s env a -> PExp s env a`, and composes without the caller having to
+get a nesting of type families right.  `examples/Patterns.hs` is where that
+shows.
+
+**And what now keeps the analysis honest.**  While the FIRST sets were also in
+the types, `PEG.Analysis` could not be quietly wrong: `Grammar` demands
+`Rules s env env`, so GHC recomputed everything and rejected an environment
+that did not match.  It no longer does.  The `typed-peg-analysis` test-suite
+therefore checks the analysis against a separate statement of what its results
+mean — nullability as a least fixpoint, and a FIRST set as the transitive
+closure of the one-step head relation — over every grammar in `examples/` and
+over 400 generated ones, and asserts that the generated corpus keeps
+containing both left-recursive and left-recursion-free grammars so the
+agreement cannot go vacuous.
+
+### Grammar checking at splice time
+
+The environment a grammar declares is no longer something only GHC can
+compute.  `PEG.Analysis` runs the same nullability and FIRST-set fixpoint in
+ordinary Haskell, over the quasi-quoter's syntax tree.
+
+*(Superseded above: the environment no longer states either, and
+`PEG.Analysis` is the only thing that computes them.)*
+
+Measurement first, because it redirected the work.  On a synthetic grammar of
+`N` rules with `2N` non-terminal occurrences (`bench-compile/`, `ghc -fno-code
+-freduction-depth=0`):
+
+| N | environment written by hand | same, FIRST sets emptied | same, indices handed to GHC as literals |
+|---|---|---|---|
+| 16 | 0.59 s | 0.55 s | 0.52 s |
+| 32 | 1.80 s | 1.09 s | 1.43 s |
+| 48 | 6.39 s | 1.97 s | 5.19 s |
+| 64 | 18.25 s | 3.75 s | 14.99 s |
+
+Left to inference, the same grammar runs out of memory rather than time: at
+`N = 16` GHC was past 24 GB of heap and still climbing.  It does derive
+exactly the environment the examples write by hand — the entries it derives
+are just full of unreduced type-family applications.
+
+And, isolating the environment search alone — `N` entries, `2N` references:
+
+| N | `Lookup` + `KnownMember` | witness, equality kept | witness, no equality |
+|---|---|---|---|
+| 32 | 0.55 s | 0.20 s | 0.18 s |
+| 64 | 3.37 s | 0.86 s | 0.56 s |
+
+Three quarters of it is the instance chain, and that quarter-to-three-quarters
+split is the useful part: supplying the proof while keeping the `Lookup`
+equality — so the reference still cannot name the wrong rule — collects most
+of the win.  On the real library, on the grammar above, it is worth **2.6x**
+at `N = 64`: 16.60 s becomes 6.27 s.
+
+So the cost that remains after the 0.2 work is mostly **not** the FIRST-set
+arithmetic: computing it in advance and handing GHC the answer is worth 1.2x.
+It is the environment — searched once per occurrence of every non-terminal,
+over entries whose size is dominated by the FIRST sets they carry.  Those are
+two independent levers that compose: 2.6x for how a reference is resolved
+(taken below) and 4.9x for what the entries carry (taken above — and the
+1.2x turned out to be the whole of the arithmetic, so what the entries carry
+cost nothing to compute and everything to have).  `PEG.Analysis` computes the
+whole environment for the 64-rule grammar in 6 ms.
+
+### Added
+
+- `PEG.Analysis`: nullability, FIRST sets and well-formedness computed at
+  splice time.  It was then the value-level twin of `PEG.TyLevel`, which was
+  the specification; it is now the only implementation, and what checks it is
+  the `typed-peg-analysis` test-suite.
+- `pegRules` now reports left recursion, a nullable repetition and a duplicate
+  rule **from the splice**, naming the rule and, for left recursion, the chain
+  of head references that closes the cycle.  A block is analysed open-world,
+  since `RCons` lets two blocks be combined, so an unknown name is treated as
+  opaque rather than reported; `Acyclic` was then the backstop, and is now
+  gone, so a cycle closing across two blocks is caught by nothing.  Write the
+  grammar as one `pegGrammar` to close that gap.
+- `PEG.QQ.Syntax`: the DSL's syntax tree and parser, split out of `PEG.QQ` so
+  that the analysis and the translation can both consume it.
+- **`pegGrammar`**, a quasi-quoter for a whole grammar.  In expression
+  position it produces the `Grammar` value; in declaration position it also
+  declares the environment and the signature, so that a grammar of `n` rules
+  is `n` lines and nothing else:
+
+  ```haskell
+  [pegGrammar|
+    %name  arith
+    %start expr
+    expr   :: Exp <- t:term ts:(o:[+-] u:term)* { foldl addOp t ts }
+    ...
+  |]
+  ```
+
+  Because it owns the whole grammar it knows each rule's position, so it emits
+  `ntw` and the membership proof rather than `nt` and a search — **2.1x** on the
+  64-rule grammar above.  It also knows that a name no rule defines is an
+  error rather than a reference to somewhere else, so it says so at the
+  splice.
+
+  A rule's result type is the one thing the grammar does not determine, which
+  is what the `:: T` annotations are for.  They are claims, not assertions:
+  `Grammar` demands `Rules s env env`, so GHC checks each against what the
+  rule body actually returns.  *(At the time this also meant GHC recomputed
+  the FIRST sets and so could not be lied to about them; the entry above is
+  what changed that.)*
+
+  `examples/Arith.hs` and `examples/Layout.hs` are written this way now and
+  declare no environment at all.  `pegRules` is unchanged and still the way to
+  write a rule set that is only part of a grammar; `examples/Compat.hs` and
+  `examples/Patterns.hs` keep using it.
+- `PEG.Syntax.NTW` and `ntw`: a non-terminal reference that carries its own
+  `Member` proof instead of having `KnownMember` search for it.  The `Lookup`
+  equality is kept, so `ty` and `a` still come from the environment and a
+  proof that names the wrong rule does not compile — this is not a weaker
+  claim than `NT`, only a cheaper one.  Worth **2.6x** on a 64-rule grammar.
+  A splice knows each rule's position and can write the proof down; a
+  hand-written grammar has nothing to gain and should keep using `nt`.
+- `bench-compile/`: a generator and a sweep script for the numbers above.
+- A test-suite, `typed-peg-analysis`, that reads `examples/` and requires the
+  computed environment of each grammar to equal the one written there.
+
+### Compile time of large grammars
 
 Checking a grammar was **exponential in the size of its FIRST sets**.  On a
 chain of `n` mutually referring rules, GHC needed 0.7 s at `n = 8`, 12 s at

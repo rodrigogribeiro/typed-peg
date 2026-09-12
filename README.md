@@ -2,14 +2,15 @@
 
 Type-safe PEG (Parsing Expression Grammar) parser combinators for Haskell.
 
-Grammar non-terminals are indexed at the type level by their nullability and
-FIRST sets, so left-recursive grammars are caught at compile time rather than
-looping at runtime.
+Grammar non-terminals are checked at the type level against an environment
+that binds each rule to the type it returns, and left-recursive grammars are
+caught when the grammar is written rather than looping at runtime.
 
 ## Features
 
-- Type-level FIRST-set and nullability tracking
-- Compile-time left-recursion detection (type error)
+- Non-terminal references checked at the type level
+- Left recursion, a repetition that cannot consume input, an undefined
+  non-terminal and a duplicate rule reported at the splice, naming the rule
 - Indentation-sensitive parsing (`PEG.Indent`)
 - Quasi-quoter for concrete grammar syntax (`PEG.QQ`)
 - Parses any `PEG.Stream`: `String`, strict/lazy `Text`, strict/lazy
@@ -56,37 +57,99 @@ arithString = parse arith
 
 ```haskell
 import PEG
+import PEG.QQ (pegGrammar)
 
--- Define a grammar using the quasi-quoter
--- See examples/Arith.hs for a complete arithmetic expression parser
+data Exp = Lit Int | Add Exp Exp | Mul Exp Exp
+
+[pegGrammar|
+  %name  arith
+  %start expr
+
+  expr   :: Exp <- t:term ts:(o:[+] u:term)*     { foldl addOp t ts }
+  term   :: Exp <- f:factor fs:(o:[*] g:factor)* { foldl addOp f fs }
+  factor :: Exp <- n:number / '(' e:expr ')'
+  number :: Exp <- ds:[0-9]+ { Lit (read (chunkToString ds)) }
+|]
 ```
 
-## Grammar size
+That declares three things: `type ArithEnv s`, the signature
+`arith :: Stream s => Grammar s (ArithEnv s) Exp`, and `arith` itself.  Run
+it with `parse arith "1+2*3"`.
 
-The nullability and FIRST set of every rule are computed by GHC while it
-type-checks the grammar, so a grammar's size shows up as compile time.  A
-FIRST set is a type-level list of non-terminal names kept in **alphabetical
-order**:
+A rule's **result type** is the one thing the grammar does not determine — it
+comes from the Haskell in the semantic action — which is what the `:: T`
+annotations are for.  They are claims, and GHC checks them: `Grammar` demands
+`Rules s env env`, so an annotation that disagrees with what the body returns
+is a type error.
+
+`pegRules` remains, for a rule set that is only part of a grammar or that is
+combined with hand-written `PExp` combinators.  It needs the environment
+written out by hand; `examples/Compat.hs` and `examples/Patterns.hs` show
+that style.  See `examples/Arith.hs` and `examples/Layout.hs` for the
+generated one.
+
+## Grammar size, and what is checked where
+
+A grammar's size shows up as compile time, because every reference in it is a
+constraint GHC has to solve against the environment.  An entry of that
+environment is a rule's name and the type it returns:
 
 ```haskell
 type CalcEnv =
-  '[ '("expr" , 'EnvEntry ('MkTy 'False '["atom", "term", "unary"]) Expr)
-   , '("term" , 'EnvEntry ('MkTy 'False '["atom", "unary"])         Expr)
-   , '("unary", 'EnvEntry ('MkTy 'False '["atom"])                  Expr)
-   , '("atom" , 'EnvEntry ('MkTy 'False '[])                        Expr)
+  '[ '("expr" , 'EnvEntry Expr)
+   , '("term" , 'EnvEntry Expr)
+   , '("unary", 'EnvEntry Expr)
+   , '("atom" , 'EnvEntry Expr)
    ]
 ```
 
-The order is not cosmetic.  It gives a set exactly one spelling, which is what
-lets the union of two FIRST sets be a single merge pass; listing one in some
-other order is a type error naming the first position that disagrees.
+Entries used to carry more: each rule's nullability and its FIRST set, the
+non-terminals that can begin it.  That is what made left recursion a type
+error — an `Acyclic` constraint checked that no rule was in its own FIRST set
+— and it was also, measurably, the entire cost of compiling a large grammar.
+A FIRST set grows with the grammar, so the environment was quadratic in the
+number of rules, and each of the two reference constraints per rule was solved
+against the whole of it.  Removing it took a 64-rule grammar from 15 s to 2 s,
+and a 128-rule one from more than two minutes to 5 s.  `bench-compile/` has
+the measurements.
 
-That merge nests one type-family reduction per element of the result, so a
-grammar with a FIRST set of more than about a hundred non-terminals hits GHC's
-default reduction limit and reports `Reduction stack overflow`.  Add
-`-freduction-depth=0` to `ghc-options` if you get there; it is a limit rather
-than a slowdown, and a union of two 128-element sets takes about 0.3 s once it
-is lifted.
+Nullability and FIRST sets are still computed — by `PEG.Analysis`, in ordinary
+Haskell, when the quasi-quoter runs, in 6 ms for a 64-rule grammar.  It is
+what reports left recursion, a nullable repetition, an undefined non-terminal
+or a duplicate rule **from the splice**, naming the rule and the chain of head
+references that closes the cycle:
+
+```
+Arith.hs:8:13: error: [GHC-39584]
+    • pegRules:
+      left-recursive non-terminal: expr
+        the cycle is expr -> term -> factor -> expr
+        a PEG cannot backtrack into a committed choice, so this rule
+        would not consume input before calling itself
+```
+
+So the checks divide like this:
+
+| what | checked by | when |
+|---|---|---|
+| a reference names a rule that exists, at the right type | GHC | every compilation |
+| a rule's `:: T` annotation matches what its body returns | GHC | every compilation |
+| left recursion, nullable repetition, duplicate rule | `PEG.Analysis` | at the splice |
+
+The second half of that table is the trade.  A `Rules` chain assembled by hand
+from `RCons`, without a quasi-quoter, is checked for reference errors only: a
+rule that begins with itself compiles and loops.  And `pegRules` analyses its
+block open-world, since two blocks can be combined, so left recursion that
+closes *across* two blocks is reported by neither it nor GHC.  Writing the
+grammar as one `pegGrammar` closes both gaps — it is closed-world, so every
+reference resolves and every cycle is visible — and it is also the fastest to
+compile, because it knows each rule's position and emits the membership proof
+instead of a `KnownMember` search.
+
+Since nothing recomputes what `PEG.Analysis` concludes, the
+`typed-peg-analysis` test-suite checks it against a separate statement of what
+nullability and a FIRST set mean, over the grammars in `examples/` and a few
+hundred generated ones.
 
 ## Patterns
 

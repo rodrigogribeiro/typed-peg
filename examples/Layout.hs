@@ -1,9 +1,8 @@
-{-# LANGUAGE DataKinds             #-}
-{-# LANGUAGE QuasiQuotes           #-}
-{-# LANGUAGE TypeApplications      #-}
-{-# LANGUAGE TypeOperators         #-}
-{-# LANGUAGE PartialTypeSignatures #-}
-{-# OPTIONS_GHC -Wno-partial-type-signatures #-}
+{-# LANGUAGE DataKinds        #-}
+{-# LANGUAGE QuasiQuotes      #-}
+{-# LANGUAGE TemplateHaskell  #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators    #-}
 
 module Layout
   ( DoStmt (..)
@@ -13,43 +12,38 @@ module Layout
   ) where
 
 import PEG
-import PEG.QQ (pegExpr, pegRules)
+import PEG.QQ (pegGrammar)
 
 data DoStmt
   = Atom   String
   | Nested [DoStmt]
   deriving (Eq, Show)
 
--- | The environment is parameterised by the stream, because @name@ is a
--- character class and so produces a chunk of the input rather than a
--- 'String'.  Any rule whose result is a chunk pushes @s@ into the
--- environment this way.
-type DoEnv s =
-  '[ '("doexp" , 'EnvEntry ('MkTy 'False '[])                               [DoStmt])
-   , '("istmts", 'EnvEntry ('MkTy 'False '["doexp", "name", "stmt", "ws"]) [DoStmt])
-   , '("stmts" , 'EnvEntry ('MkTy 'False '["ws"])                          [DoStmt])
-   , '("stmt"  , 'EnvEntry ('MkTy 'False '["doexp", "name"])               DoStmt)
-   , '("name"  , 'EnvEntry ('MkTy 'False '[])                              s)
-   , '("ws"    , 'EnvEntry ('MkTy 'True  '[])                              ())
-   ]
+-- | @name@ is a character class, so its result is a chunk of the input rather
+-- than a 'String' — which is why its annotation is @s@ and why the generated
+-- environment takes the stream as a parameter.
+--
+-- @ws@ has neither a label nor an action, so it returns @()@: that is the
+-- DSL's rule for a rule body, and the annotation has to agree with it.  A
+-- start expression is different — @%start ws d:doexp ws !.@ returns what its
+-- one labelled item returns.
+[pegGrammar|
+  %name  doExp
+  %env   DoEnv
+  %start ws d:doexp ws !.
 
-doExp :: Stream s => Grammar s (DoEnv s) _ [DoStmt]
-doExp =
-  Grammar
-    [pegRules|
-       doexp  <- "do" b:(i:istmts / j:stmts)
+  doexp  :: [DoStmt] <- "do" b:(i:istmts / j:stmts)
 
-       istmts <- ss:(ws st:|s:stmt|)+^>
+  istmts :: [DoStmt] <- ss:(ws st:|s:stmt|)+^>
 
-       stmts  <- r:(ws '{' ws s:stmt ss:(ws ';' ws t:stmt)* ws '}' { s : ss })^~
+  stmts  :: [DoStmt] <- r:(ws '{' ws s:stmt ss:(ws ';' ws t:stmt)* ws '}' { s : ss })^~
 
-       stmt   <- d:doexp { Nested d } / n:name { Atom (chunkToString n) }
+  stmt   :: DoStmt   <- d:doexp { Nested d } / n:name { Atom (chunkToString n) }
 
-       name   <- cs:[a-z]+
+  name   :: s        <- cs:[a-z]+
 
-       ws     <- [ \t\r\n]*_~
-    |]
-    [pegExpr| ws d:doexp ws !. |]
+  ws     :: ()       <- [ \t\r\n]*_~
+|]
 
 layoutOpts :: Opts
 layoutOpts = defaultOpts { optTokenMode = relD geR }

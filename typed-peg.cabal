@@ -4,9 +4,11 @@ version:            0.2.0.0
 synopsis:           Type-safe PEG parser combinators
 description:
   A library for building Parsing Expression Grammars parsers
-  with compile-time safety guarantees. Grammar non-terminals are
-  indexed by their nullability and FIRST sets at the type level,
-  making left-recursive grammars a type error.
+  with compile-time safety guarantees. Non-terminal references are
+  checked at the type level against an environment binding each rule
+  to the type it returns; left recursion, a repetition that cannot
+  consume input, an undefined non-terminal and a duplicate rule are
+  reported when the grammar is spliced, naming the rule.
   .
   A quasi-quoter (@PEG.QQ@) allows writing grammars in a concrete
   DSL syntax. Indentation-sensitive parsing is supported natively
@@ -59,6 +61,7 @@ library
   hs-source-dirs:  src
   exposed-modules:
     PEG
+    PEG.Analysis
     PEG.CharSet
     PEG.Grammar
     PEG.Indent
@@ -66,6 +69,7 @@ library
     PEG.Parse
     PEG.QQ
     PEG.QQ.HsExp
+    PEG.QQ.Syntax
     PEG.Semantics.Simple
     PEG.Stream
     PEG.Syntax
@@ -87,6 +91,16 @@ test-suite typed-peg-examples
       base
     , bytestring
     , text
+    , typed-peg
+
+test-suite typed-peg-analysis
+  import:          common-opts
+  type:            exitcode-stdio-1.0
+  hs-source-dirs:  tests
+  main-is:         Analysis.hs
+  other-extensions: TemplateHaskell, QuasiQuotes
+  build-depends:
+      base
     , typed-peg
 
 benchmark typed-peg-bench

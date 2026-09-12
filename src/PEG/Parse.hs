@@ -132,20 +132,20 @@ defaultOpts = Opts
   }
 
 -- | Run a grammar with 'defaultOpts'.
-parse :: Stream s => Grammar s env ty a -> s -> Result s a
+parse :: Stream s => Grammar s env a -> s -> Result s a
 parse = parseWith defaultOpts
 {-# INLINABLE parse #-}
-{-# SPECIALIZE parse :: Grammar String env ty a -> String -> Result String a #-}
-{-# SPECIALIZE parse :: Grammar T.Text env ty a -> T.Text -> Result T.Text a #-}
+{-# SPECIALIZE parse :: Grammar String env a -> String -> Result String a #-}
+{-# SPECIALIZE parse :: Grammar T.Text env a -> T.Text -> Result T.Text a #-}
 {-# SPECIALIZE parse
-      :: Grammar B.ByteString env ty a -> B.ByteString -> Result B.ByteString a #-}
+      :: Grammar B.ByteString env a -> B.ByteString -> Result B.ByteString a #-}
 
 -- | Run a grammar with custom 'Opts'.
 --
 -- Partially applying this to the options and the grammar yields a compiled
 -- parser; see the note at the top of this module.
-parseWith :: forall s env ty a.
-             Stream s => Opts -> Grammar s env ty a -> s -> Result s a
+parseWith :: forall s env a.
+             Stream s => Opts -> Grammar s env a -> s -> Result s a
 parseWith opts g = run
   where
     step = compileGrammar (optTabWidth opts) g
@@ -156,11 +156,11 @@ parseWith opts g = run
       (# | (# a, st #) #) -> OK a (takeS (stOff st) input) (stInput st)
 {-# INLINABLE parseWith #-}
 {-# SPECIALIZE parseWith
-      :: Opts -> Grammar String env ty a -> String -> Result String a #-}
+      :: Opts -> Grammar String env a -> String -> Result String a #-}
 {-# SPECIALIZE parseWith
-      :: Opts -> Grammar T.Text env ty a -> T.Text -> Result T.Text a #-}
+      :: Opts -> Grammar T.Text env a -> T.Text -> Result T.Text a #-}
 {-# SPECIALIZE parseWith
-      :: Opts -> Grammar B.ByteString env ty a
+      :: Opts -> Grammar B.ByteString env a
       -> B.ByteString -> Result B.ByteString a #-}
 
 --------------------------------------------------------------------------------
@@ -174,7 +174,7 @@ data CRules (s :: Type) (env :: Env) (defs :: Env) where
   CNil  :: CRules s env '[]
   CCons :: Step s a
         -> CRules s env rest
-        -> CRules s env ('(n, 'EnvEntry ty a) ': rest)
+        -> CRules s env ('(n, 'EnvEntry a) ': rest)
 
 clookup :: Member n defs a -> CRules s env defs -> Step s a
 clookup Here      (CCons f _)    = f
@@ -185,8 +185,8 @@ clookup (There m) (CCons _ rest) = clookup m rest
 -- The traversal resolves every non-terminal reference to the corresponding
 -- compiled rule, so at parse time a non-terminal costs one indirect call
 -- instead of a walk down the rule list.
-compileGrammar :: forall s env ty a.
-                  Stream s => Int -> Grammar s env ty a -> Step s a
+compileGrammar :: forall s env a.
+                  Stream s => Int -> Grammar s env a -> Step s a
 compileGrammar tw (Grammar rules start) = compileE tw table start
   where
     table :: CRules s env env
@@ -201,11 +201,11 @@ compileGrammar tw (Grammar rules start) = compileE tw table start
 -- per-character path stops being allocation-free.  Callers using another
 -- stream should mark their own monomorphic parser bindings INLINABLE.
 {-# SPECIALIZE compileGrammar
-      :: Int -> Grammar String env ty a -> Step String a #-}
+      :: Int -> Grammar String env a -> Step String a #-}
 {-# SPECIALIZE compileGrammar
-      :: Int -> Grammar T.Text env ty a -> Step T.Text a #-}
+      :: Int -> Grammar T.Text env a -> Step T.Text a #-}
 {-# SPECIALIZE compileGrammar
-      :: Int -> Grammar B.ByteString env ty a -> Step B.ByteString a #-}
+      :: Int -> Grammar B.ByteString env a -> Step B.ByteString a #-}
 
 -- | Does this class avoid the two characters whose column advance is not
 -- simply @+1@?  When it does, the column after a matched run is the column
@@ -213,8 +213,8 @@ compileGrammar tw (Grammar rules start) = compileE tw table start
 simpleCS :: CharSet -> Bool
 simpleCS cs = not (memberCS '\n' cs) && not (memberCS '\t' cs)
 
-compileE :: forall s env ty a.
-            Stream s => Int -> CRules s env env -> PExp s env ty a -> Step s a
+compileE :: forall s env a.
+            Stream s => Int -> CRules s env env -> PExp s env a -> Step s a
 compileE tw table = comp
   where
     -- Select the stream operations once per compiled grammar.  Leaving them
@@ -228,7 +228,7 @@ compileE tw table = comp
     !packS   = packString    :: String -> s
     !emptyS  = packS []
 
-    comp :: forall t b. PExp s env t b -> Step s b
+    comp :: forall b. PExp s env b -> Step s b
 
     comp (Pure x) = \_ st -> (# | (# x, st #) #)
 
@@ -245,10 +245,14 @@ compileE tw table = comp
     comp (Span  cs) = spanChunk (\c -> memberCS c cs) (simpleCS cs) False
     comp (Span1 cs) = spanChunk (\c -> memberCS c cs) (simpleCS cs) True
 
-    -- 'ty' and 'a' come from the constructor's own equality
-    -- @Lookup n env ~ 'EnvEntry ty a@, so no type family has to be reduced
+    -- 'a' comes from the constructor's own equality
+    -- @Lookup n env ~ 'EnvEntry a@, so no type family has to be reduced
     -- here at all.
     comp (NT @n _) = clookup (member @n @env) table
+
+    -- The witness came with the reference, so there is no search at all:
+    -- neither here nor, more to the point, in the type checker.
+    comp (NTW _ w) = clookup w table
 
     -- Neither this nor 'Map' below allocates: the intermediate results travel
     -- in registers, so a quasi-quoted rule of @n@ items costs @n@ calls and

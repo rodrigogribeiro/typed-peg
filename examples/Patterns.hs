@@ -3,8 +3,6 @@
 {-# LANGUAGE QuasiQuotes           #-}
 {-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE TypeOperators         #-}
-{-# LANGUAGE PartialTypeSignatures #-}
-{-# OPTIONS_GHC -Wno-partial-type-signatures #-}
 
 -- | Worked examples for @peg-patterns.md@.
 --
@@ -31,21 +29,30 @@ import PEG.QQ (pegExpr, pegRules)
 
 -- | Zero or more layout characters.  A character class, so this compiles to a
 -- single 'Span' node and returns a chunk of the input.
-ws :: PExp s env ('MkTy 'True '[]) s
+ws :: PExp s env s
 ws = spanOf (fromRanges [(' ', ' '), ('\t', '\t'), ('\r', '\r'), ('\n', '\n')])
 
 -- | Run @p@, then consume /trailing/ whitespace only.
-lexeme :: PExp s env ty a -> PExp s env (SeqTy ty ('MkTy 'True '[])) a
+--
+-- A combinator over expressions is an ordinary polymorphic function.  It did
+-- not use to be: when a 'PExp' carried its nullability and FIRST set in a
+-- fourth index, this had to be written
+--
+-- @
+-- lexeme :: PExp s env ty a -> PExp s env (SeqTy ty ('MkTy 'True '[])) a
+-- @
+--
+-- and every combinator built on it had to restate the nesting exactly.  See
+-- "PEG.Type" for where those indices went.
+lexeme :: PExp s env a -> PExp s env a
 lexeme p = (\x _ -> x) <$>. p <*>. ws
 
 -- | End of input: nothing can follow.
-eof :: PExp s env ('MkTy 'True '[]) ()
+eof :: PExp s env ()
 eof = Not AnyChar
 
 -- | Leading whitespace, then @p@, then end of input.
-fully :: PExp s env ty a
-      -> PExp s env (SeqTy ('MkTy 'True '[])
-                           (SeqTy ty ('MkTy 'True '[]))) a
+fully :: PExp s env a -> PExp s env a
 fully p = (\_ x _ -> x) <$>. ws <*>. p <*>. eof
 
 --------------------------------------------------------------------------------
@@ -60,7 +67,7 @@ identCont = fromRanges [('a', 'z'), ('A', 'Z'), ('0', '9'), ('_', '_')]
 -- The negative lookahead is the whole pattern: @keyword "negate"@ fails on
 -- @negatex@ because an identifier character follows.  In a backtracking
 -- combinator library this needs @try@; in a PEG it is just @!@.
-keyword :: String -> PExp s env ('MkTy 'False '[]) ()
+keyword :: String -> PExp s env ()
 keyword k = (\_ _ -> ()) <$>. stringNE k <*>. Not (sat identCont)
 
 --------------------------------------------------------------------------------
@@ -121,18 +128,18 @@ mkAsgn v e = Asgn (chunkToString v) e
 --------------------------------------------------------------------------------
 
 type CalcEnv s =
-  '[ '("expr" , 'EnvEntry ('MkTy 'False '["atom", "term", "unary"]) Expr)
-   , '("term" , 'EnvEntry ('MkTy 'False '["atom", "unary"])         Expr)
-   , '("unary", 'EnvEntry ('MkTy 'False '["atom"])                  Expr)
-   , '("atom" , 'EnvEntry ('MkTy 'False '[])                        Expr)
+  '[ '("expr" , 'EnvEntry Expr)
+   , '("term" , 'EnvEntry Expr)
+   , '("unary", 'EnvEntry Expr)
+   , '("atom" , 'EnvEntry Expr)
    ]
 
 -- | The classic expression language.
 --
 -- Note what is /not/ here: no @try@, no left recursion, and no rule that can
--- loop.  @expr <- expr '+' term@ would be rejected by 'PEG.Grammar.Acyclic'
--- at compile time with a type error naming @expr@.
-calc :: Stream s => Grammar s (CalcEnv s) _ Expr
+-- loop.  @expr <- expr '+' term@ would be rejected by 'PEG.Analysis' when the
+-- @pegRules@ block below is spliced, naming @expr@ and the cycle.
+calc :: Stream s => Grammar s (CalcEnv s) Expr
 calc =
   Grammar
     [pegRules|
@@ -148,9 +155,9 @@ calc =
 
 -- | The same pattern inside a quasi-quoted grammar: a string literal followed
 -- by a negative lookahead on the identifier-continuation class.
-type KwEnv = '[ '("kw", 'EnvEntry ('MkTy 'False '[]) String) ]
+type KwEnv = '[ '("kw", 'EnvEntry String) ]
 
-kwG :: Stream s => Grammar s KwEnv _ String
+kwG :: Stream s => Grammar s KwEnv String
 kwG = Grammar [pegRules| kw <- k:"negate" ![a-zA-Z0-9_]  { k } |] (nt @"kw")
 
 --------------------------------------------------------------------------------
@@ -163,9 +170,9 @@ kwG = Grammar [pegRules| kw <- k:"negate" ![a-zA-Z0-9_]  { k } |] (nt @"kw")
 --------------------------------------------------------------------------------
 
 type OpEnv =
-  '[ '("op", 'EnvEntry ('MkTy 'False '[]) (Expr -> Expr -> Expr)) ]
+  '[ '("op", 'EnvEntry (Expr -> Expr -> Expr)) ]
 
-addOp :: Stream s => Grammar s OpEnv _ (Expr -> Expr -> Expr)
+addOp :: Stream s => Grammar s OpEnv (Expr -> Expr -> Expr)
 addOp = Grammar [pegRules| op <- '+' { Add } / '-' { Sub } |] (nt @"op")
 
 --------------------------------------------------------------------------------
@@ -173,12 +180,12 @@ addOp = Grammar [pegRules| op <- '+' { Add } / '-' { Sub } |] (nt @"op")
 --------------------------------------------------------------------------------
 
 type ProgEnv s =
-  '[ '("prog" , 'EnvEntry ('MkTy 'False '["asgn"]) [Asgn])
-   , '("asgn" , 'EnvEntry ('MkTy 'False '[])       Asgn)
-   , '("expr" , 'EnvEntry ('MkTy 'False '["atom", "term", "unary"]) Expr)
-   , '("term" , 'EnvEntry ('MkTy 'False '["atom", "unary"])         Expr)
-   , '("unary", 'EnvEntry ('MkTy 'False '["atom"])                  Expr)
-   , '("atom" , 'EnvEntry ('MkTy 'False '[])                        Expr)
+  '[ '("prog" , 'EnvEntry [Asgn])
+   , '("asgn" , 'EnvEntry Asgn)
+   , '("expr" , 'EnvEntry Expr)
+   , '("term" , 'EnvEntry Expr)
+   , '("unary", 'EnvEntry Expr)
+   , '("atom" , 'EnvEntry Expr)
    ]
 
 -- | @a := 1; b := a * 2@
@@ -187,7 +194,7 @@ type ProgEnv s =
 -- illustrates is the one PEG newcomers get wrong: in an ordered choice the
 -- longer alternative must come first, because the first success wins and
 -- there is no backtracking into a committed branch.
-prog :: Stream s => Grammar s (ProgEnv s) _ [Asgn]
+prog :: Stream s => Grammar s (ProgEnv s) [Asgn]
 prog =
   Grammar
     [pegRules|
