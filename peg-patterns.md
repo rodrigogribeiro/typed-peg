@@ -154,11 +154,17 @@ sets are now computed by `PEG.Analysis` at the splice instead, so what is left
 to write down is the part only you know: what the rule returns.
 
 Better still, do not write it down at all. `pegGrammar` generates the
-environment from the same `:: T` annotations:
+grammar's non-terminals from the same `:: T` annotations — as a key type with
+one constructor per rule, `data CalcEnv s a where CalcEnv_expr :: CalcEnv s
+Expr; ...`, rather than as a list — and that is also what keeps a grammar of
+hundreds of rules cheap to compile:
 
 ```
 expr :: Expr <- t:term ts:(o:[+-] u:term)* { chainl t ts }
 ```
+
+A grammar over a hand-written list names it through `InEnv`:
+`Grammar s (InEnv (CalcEnv s)) Expr`.
 
 ### 1.4 Precedence tables: absent, but not impossible
 
@@ -372,7 +378,7 @@ just a rule whose result type is a function:
 ```haskell
 type OpEnv = '[ '("op", 'EnvEntry (Expr -> Expr -> Expr)) ]
 
-addOp :: Stream s => Grammar s OpEnv (Expr -> Expr -> Expr)
+addOp :: Stream s => Grammar s (InEnv OpEnv) (Expr -> Expr -> Expr)
 addOp = Grammar [pegRules| op <- '+' { Add } / '-' { Sub } |] (nt @"op")
 ```
 

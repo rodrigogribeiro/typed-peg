@@ -5,6 +5,7 @@
 {-# LANGUAGE TypeFamilies         #-}
 {-# LANGUAGE TypeOperators        #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE RankNTypes           #-}
 
 -- | Grammar and rule-set types.
 --
@@ -30,7 +31,8 @@
 --
 -- * A 'Rules' chain assembled by hand from 'RCons', or a 'Grammar' built
 --   around one, is checked for /reference/ errors only.  A rule that begins
---   with itself compiles, and loops when run.
+--   with itself compiles, and loops when run.  So is a 'Keyed' grammar whose
+--   key type and rules were written by hand.
 -- * 'PEG.QQ.pegRules' analyses its block open-world, because 'RCons' lets two
 --   blocks be combined and a name the block does not define may be defined by
 --   the other one.  Left recursion that closes /across/ two blocks is
@@ -39,9 +41,10 @@
 --   reference is resolved and every cycle is visible.
 --
 -- Prefer 'PEG.QQ.pegGrammar'.  It is the only way to write a grammar that is
--- checked completely, and it is also the fastest to compile, because it knows
--- each rule's position and emits 'PEG.Syntax.ntw' with the membership proof
--- rather than a 'PEG.Member.KnownMember' search.
+-- checked completely, and it is also the fastest to compile: in declaration
+-- position it declares a key type for the grammar, one constructor per rule,
+-- and builds a 'Keyed' grammar whose references cost the type checker the
+-- same however many rules there are.  See "PEG.Key".
 module PEG.Grammar
   ( Rules (..)
   , Grammar (..)
@@ -49,10 +52,12 @@ module PEG.Grammar
 
 import Data.Kind    (Type)
 
+import PEG.Key     (InEnv, Tabulate)
 import PEG.Syntax  (Name, PExp)
 import PEG.Type
 
--- | A typed, heterogeneous list of named grammar rules.
+-- | A typed, heterogeneous list of named grammar rules over a type-level
+-- environment.
 --
 -- @'Rules' s env defs@ is a list of rules over the stream @s@ whose bodies
 -- reference non-terminals in @env@ and whose definitions together form
@@ -60,25 +65,37 @@ import PEG.Type
 data Rules (s :: Type) (env :: Env) (defs :: Env) where
   RNil  :: Rules s env '[]
   RCons :: Name n
-        -> PExp s env a
+        -> PExp s (InEnv env) a
         -> Rules s env rest
         -> Rules s env ('(n, 'EnvEntry a) ': rest)
 
 -- | A complete PEG grammar over the stream @s@: a set of mutually recursive
--- rules and a start expression.
---
--- The @Rules s env env@ field is what ties the two halves together: every
--- rule's body is checked against the same environment the rule set defines,
--- so a reference can only name a rule that exists and only at the type that
--- rule has.
+-- rules and a start expression, with its non-terminals named by keys of type
+-- @nt@.
 --
 -- A 'Grammar' is monomorphic in its stream.  To reuse one grammar across
 -- several stream types, give it a signature of the form
--- @forall s. 'PEG.Stream.Stream' s => Grammar s Env a@ — but note that
+-- @forall s. 'PEG.Stream.Stream' s => Grammar s (Env s) a@ — but note that
 -- doing so turns the value into a function of a dictionary, so the compiled
 -- parser is no longer shared between calls.  Prefer a monomorphic top-level
 -- signature.
-data Grammar (s :: Type) (env :: Env) (a :: Type) where
+data Grammar (s :: Type) (nt :: Type -> Type) (a :: Type) where
+  -- | A grammar over a type-level environment.
+  --
+  -- The @Rules s env env@ field is what ties the two halves together: every
+  -- rule's body is checked against the same environment the rule set
+  -- defines, so a reference can only name a rule that exists and only at the
+  -- type that rule has.
   Grammar :: Rules s env env
-          -> PExp s env a
-          -> Grammar s env a
+          -> PExp s (InEnv env) a
+          -> Grammar s (InEnv env) a
+  -- | A grammar over a declared key type: the rule each key names, and the
+  -- start expression.
+  --
+  -- The rules are a function rather than a list, so that a rule's body is
+  -- found by matching on its key — a @case@ whose every branch is checked on
+  -- its own — and not by walking a type-level structure.
+  Keyed   :: Tabulate nt
+          => (forall b. nt b -> PExp s nt b)
+          -> PExp s nt a
+          -> Grammar s nt a

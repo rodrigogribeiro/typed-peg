@@ -56,8 +56,13 @@ module PEG.Analysis
   , spannable
   ) where
 
-import Data.List (foldl1', nub)
-import Data.Maybe (fromMaybe)
+import           Data.Graph      (SCC (..), stronglyConnComp)
+import           Data.List       (foldl1')
+import qualified Data.List       as L
+import qualified Data.Map.Strict as M
+import           Data.Sequence   (Seq (..), (|>))
+import qualified Data.Sequence   as Seq
+import qualified Data.Set        as S
 
 import PEG.QQ.Syntax (Def (..), Item (..), PExpr (..))
 
@@ -217,6 +222,27 @@ analyse :: [Def] -> Either [Diagnostic] RuleEnv
 analyse = analyseWith Closed
 
 -- | 'analyse', over a whole grammar or a fragment of one.
+--
+-- == Cost
+--
+-- This runs inside every splice of a grammar, so its cost is paid on every
+-- compilation of the module, and it is written to be linear in the grammar
+-- wherever the answer allows.  Nothing the diagnostics need is a FIRST set:
+--
+-- * Nullability is a least fixpoint over booleans alone.
+-- * The /direct/ head references of each rule — 'exprTy' again, with every
+--   rule's FIRST set taken to be empty — form a graph, and a rule is
+--   left-recursive exactly when it lies on a cycle of that graph, which its
+--   strongly connected components say directly.
+-- * The cycle reported is a shortest one, found by a breadth-first search
+--   inside the rule's component.
+--
+-- The FIRST sets in the environment returned are the transitive closure of
+-- that graph, and are computed only if the environment is inspected.  They
+-- used to be computed, by Kleene iteration over whole sets, on every splice:
+-- a precedence ladder of @N@ rules has FIRST sets of @N^2/2@ names in total,
+-- and each iteration rebuilt and compared all of them, which on 1024 rules
+-- was 49 seconds of a 58-second compile.
 analyseWith :: World -> [Def] -> Either [Diagnostic] RuleEnv
 analyseWith world defs
   | not (null dups)      = Left dups
@@ -225,73 +251,128 @@ analyseWith world defs
   | not (null leftRecs)  = Left leftRecs
   | otherwise            = Right env
   where
-    names = [ n | Def n _ _ <- defs ]
+    names   = [ n | Def n _ _ <- defs ]
+    defined = S.fromList names
 
-    dups = [ DuplicateRule n
-           | n <- nub names, length (filter (== n) names) > 1 ]
+    -- The first definition of each name, as 'bodyOf' used to take it.
+    bodies :: M.Map String PExpr
+    bodies = M.fromList [ (n, e) | Def n _ e <- reverse defs ]
+
+    dups = [ DuplicateRule n | n <- nubOrd names, M.findWithDefault 0 n counts > 1 ]
+      where counts = M.fromListWith (+) [ (n, 1 :: Int) | n <- names ]
 
     undefs = case world of
       Open   -> []
       Closed -> [ UndefinedNT n names
-                | n <- nub (concatMap (refs . body) defs), n `notElem` names ]
-      where body (Def _ _ e) = e
+                | n <- nubOrd (concatMap (\(Def _ _ e) -> refs e) defs)
+                , not (S.member n defined) ]
 
-    -- Kleene iteration from the empty environment.  Every clause of 'exprTy'
-    -- is monotone in the environment and the lattice is finite, so this
-    -- terminates; it is the least solution of the equations the type families
-    -- state.
-    env = fix [ (n, Ty False []) | n <- names ]
+    -- Kleene iteration over nullability alone, from "nothing is nullable".
+    -- Each pass updates the rules in order, reading what earlier rules of
+    -- the same pass concluded, and stops at the first pass that changes
+    -- nothing; that is still the least solution, since every step is
+    -- monotone.
+    nullables :: M.Map String Bool
+    nullables = fix (M.fromList [ (n, False) | n <- names ])
       where
-        fix m = let m' = step m in if m' == m then m else fix m'
-        step m = [ (n, exprTy (at m) e) | Def n _ e <- defs ]
+        fix m = case L.foldl' update (m, False) defs of
+                  (m', True) -> fix m'
+                  (m', _)    -> m'
+        update (m, changed) (Def n _ e) =
+          let new = tyNullable (exprTy (headsOnly m) e)
+          in if new && not (M.findWithDefault False n m)
+               then (M.insert n True m, True)
+               else (m, changed)
 
-    at m n = fromMaybe (Ty False []) (lookup n m)
+    -- An environment that knows each rule's nullability and nothing of its
+    -- FIRST set, under which 'exprTy' yields an expression's /direct/ heads.
+    headsOnly m k = Ty (M.findWithDefault False k m) []
+
+    nullableEnv = headsOnly nullables
+
+    -- The graph of direct head references.  A name no rule defines is a node
+    -- with no successors, as it is opaque in an 'Open' block.
+    heads :: M.Map String [String]
+    heads = M.map (tyFirst . exprTy nullableEnv) bodies
+
+    succs k = M.findWithDefault [] k heads
 
     -- A repetition must consume input, which 'PEG.Syntax.Star' states as a
     -- non-nullable operand.  Checking it here names the rule it is in.
-    illFormed = [ NullableStar n | Def n _ e <- defs, hasNullableRep (at env) e ]
+    illFormed = [ NullableStar n | Def n _ e <- defs, hasNullableRep nullableEnv e ]
+
+    -- Each rule's strongly connected component.  A rule is on a cycle when
+    -- its component is cyclic, which includes a rule heading itself.
+    component :: M.Map String Int
+    component = M.fromList
+      [ (n, i) | (i, CyclicSCC ns) <- zip [0 ..] sccs, n <- ns ]
+      where
+        sccs = stronglyConnComp
+                 [ (n, n, [ h | h <- succs n, S.member h defined ])
+                 | n <- M.keys bodies ]
 
     -- Every rule on a cycle is left-recursive, and reporting each of them
     -- prints the same cycle once per entry point.  Two paths that are
     -- rotations of each other are the same cycle, so only the first is kept.
-    leftRecs = dedupe [] [ LeftRecursive n (cycleFrom n)
-                         | (n, t) <- env, n `elem` tyFirst t ]
+    leftRecs = dedupe S.empty [ LeftRecursive n (cycleFrom n)
+                              | n <- names, M.member n component ]
       where
         dedupe _ [] = []
         dedupe seen (d@(LeftRecursive _ path) : rest)
-          | key `elem` seen = dedupe seen rest
-          | otherwise       = d : dedupe (key : seen) rest
+          | S.member key seen = dedupe seen rest
+          | otherwise         = d : dedupe (S.insert key seen) rest
           where key = canonical path
         dedupe seen (d : rest) = d : dedupe seen rest
 
     -- A cycle is written as @n -> ... -> n@; drop the repeated end and turn
-    -- it so that it starts at its least name.
+    -- it so that it starts at its least name.  A shortest cycle visits no
+    -- rule twice, so that rotation is unique.
     canonical path = case reverse (drop 1 (reverse path)) of
       []    -> []
-      nodes -> minimum [ rotate k nodes | k <- [0 .. length nodes - 1] ]
-      where rotate k xs = drop k xs ++ take k xs
+      nodes -> let (pre, post) = break (== minimum nodes) nodes
+               in post ++ pre
 
-    -- The FIRST set is already transitive, so it says /that/ a rule is
-    -- left-recursive but not /how/.  The chain is recovered from the graph of
-    -- direct head references, which is 'exprTy' again with the environment
-    -- cut back to nullability alone.
-    heads n = tyFirst (exprTy (\k -> Ty (tyNullable (at env k)) []) (bodyOf n))
-
-    bodyOf n = case [ e | Def m _ e <- defs, m == n ] of
-                 (e:_) -> e
-                 []    -> ESeq [] Nothing
-
-    cycleFrom n = go [n] n
+    -- A shortest cycle through @n@: breadth first from @n@, never leaving its
+    -- component, until a rule that heads @n@ is dequeued.
+    cycleFrom n = go (M.singleton n n) (Seq.singleton n)
       where
-        go path cur = case [ h | h <- heads cur, h == n ] of
-          (_:_) -> reverse (n : path)
-          []    -> case [ p | h <- heads cur
-                            , h `notElem` path
-                            , n `elem` tyFirst (at env h)
-                            , p <- [go (h : path) h]
-                            , not (null p) ] of
-                     (p:_) -> p
-                     []    -> []
+        comp = M.lookup n component
+        go _ Empty = []
+        go parents (cur :<| queue)
+          | n `elem` succs cur = reverse (pathTo parents cur) ++ [n]
+          | otherwise =
+              let new      = [ h | h <- nubOrd (succs cur)
+                                 , M.lookup h component == comp
+                                 , not (M.member h parents) ]
+                  parents' = L.foldl' (\m h -> M.insert h cur m) parents new
+              in go parents' (L.foldl' (|>) queue new)
+        pathTo parents cur
+          | cur == n  = [n]
+          | otherwise = cur : pathTo parents (M.findWithDefault n cur parents)
+
+    -- The environment, with FIRST sets as the transitive closure of the head
+    -- graph: exactly what iterating 'exprTy' over whole sets converges to,
+    -- because 'exprTy' is a union of its operands' sets under a fixed
+    -- nullability.  Lazy, and only built when someone looks.
+    env = [ (n, Ty (M.findWithDefault False n nullables)
+                   (S.toAscList (reach (succs n))))
+          | n <- names ]
+
+    reach = grow S.empty
+      where
+        grow seen []     = seen
+        grow seen (x:xs)
+          | S.member x seen = grow seen xs
+          | otherwise       = grow (S.insert x seen) (succs x ++ xs)
+
+-- | 'Data.List.nub' in @O(n log n)@, keeping first occurrences in order.
+nubOrd :: Ord a => [a] -> [a]
+nubOrd = go S.empty
+  where
+    go _ [] = []
+    go seen (x:xs)
+      | S.member x seen = go seen xs
+      | otherwise       = x : go (S.insert x seen) xs
 
 -- | Every non-terminal a body references, at any position.
 refs :: PExpr -> [String]

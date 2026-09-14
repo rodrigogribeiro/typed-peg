@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds        #-}
+{-# LANGUAGE GADTs            #-}
 {-# LANGUAGE QuasiQuotes      #-}
 {-# LANGUAGE TemplateHaskell  #-}
 {-# LANGUAGE TypeApplications #-}
@@ -21,7 +22,7 @@ data DoStmt
 
 -- | @name@ is a character class, so its result is a chunk of the input rather
 -- than a 'String' — which is why its annotation is @s@ and why the generated
--- environment takes the stream as a parameter.
+-- key type takes the stream as a parameter.
 --
 -- @ws@ has neither a label nor an action, so it returns @()@: that is the
 -- DSL's rule for a rule body, and the annotation has to agree with it.  A

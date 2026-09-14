@@ -83,7 +83,7 @@ type SpanEnv s =
    , '("digits1", 'EnvEntry s)
    ]
 
-spanG :: Stream s => Grammar s (SpanEnv s) (s, s)
+spanG :: Stream s => Grammar s (InEnv (SpanEnv s)) (s, s)
 spanG =
   Grammar
     [pegRules|
@@ -94,10 +94,10 @@ spanG =
 
 -- @!'x'+ .@ accepts any character that is not an @x@; @!'x'* .@ accepts
 -- nothing at all.
-notSpan1G :: Stream s => Grammar s '[] Char
+notSpan1G :: Stream s => Grammar s (InEnv '[]) Char
 notSpan1G = Grammar RNil [pegExpr| !'x'+ c:. |]
 
-notSpanG :: Stream s => Grammar s '[] Char
+notSpanG :: Stream s => Grammar s (InEnv '[]) Char
 notSpanG = Grammar RNil [pegExpr| !'x'* c:. |]
 
 spanCases :: [String]

@@ -29,8 +29,10 @@
 -- "PEG.Type"), so the same discipline is cheap to keep and worth keeping.
 --
 -- Better still is not to search at all: 'PEG.Syntax.ntw' takes the witness
--- rather than deriving it, which is what a quasi-quoter emits, since a splice
--- knows every rule's position.
+-- rather than deriving it, which is what 'PEG.QQ.pegGrammar' emits in
+-- expression position, since a splice knows every rule's position.  Best is
+-- not to have a list: in declaration position 'PEG.QQ.pegGrammar' declares a
+-- key type instead, and a reference is a constructor; see "PEG.Key".
 module PEG.Member
   ( Member (..)
   , KnownMember (..)

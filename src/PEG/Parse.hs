@@ -1,11 +1,11 @@
 {-# LANGUAGE BangPatterns        #-}
 {-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE DataKinds           #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE KindSignatures      #-}
 {-# LANGUAGE MagicHash           #-}
 {-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeAbstractions    #-}
 {-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE TypeOperators       #-}
@@ -68,10 +68,11 @@ import qualified Data.Text       as T
 import PEG.CharSet (CharSet, memberCS)
 import PEG.Grammar
 import PEG.Indent
+import PEG.Key
 import PEG.Member
 import PEG.Stream
 import PEG.Syntax
-import PEG.Type
+import PEG.Type (Env, EnvEntry (..))
 
 -- | The result of running a grammar.
 --
@@ -132,20 +133,20 @@ defaultOpts = Opts
   }
 
 -- | Run a grammar with 'defaultOpts'.
-parse :: Stream s => Grammar s env a -> s -> Result s a
+parse :: Stream s => Grammar s nt a -> s -> Result s a
 parse = parseWith defaultOpts
 {-# INLINABLE parse #-}
-{-# SPECIALIZE parse :: Grammar String env a -> String -> Result String a #-}
-{-# SPECIALIZE parse :: Grammar T.Text env a -> T.Text -> Result T.Text a #-}
+{-# SPECIALIZE parse :: Grammar String nt a -> String -> Result String a #-}
+{-# SPECIALIZE parse :: Grammar T.Text nt a -> T.Text -> Result T.Text a #-}
 {-# SPECIALIZE parse
-      :: Grammar B.ByteString env a -> B.ByteString -> Result B.ByteString a #-}
+      :: Grammar B.ByteString nt a -> B.ByteString -> Result B.ByteString a #-}
 
 -- | Run a grammar with custom 'Opts'.
 --
 -- Partially applying this to the options and the grammar yields a compiled
 -- parser; see the note at the top of this module.
-parseWith :: forall s env a.
-             Stream s => Opts -> Grammar s env a -> s -> Result s a
+parseWith :: forall s nt a.
+             Stream s => Opts -> Grammar s nt a -> s -> Result s a
 parseWith opts g = run
   where
     step = compileGrammar (optTabWidth opts) g
@@ -156,11 +157,11 @@ parseWith opts g = run
       (# | (# a, st #) #) -> OK a (takeS (stOff st) input) (stInput st)
 {-# INLINABLE parseWith #-}
 {-# SPECIALIZE parseWith
-      :: Opts -> Grammar String env a -> String -> Result String a #-}
+      :: Opts -> Grammar String nt a -> String -> Result String a #-}
 {-# SPECIALIZE parseWith
-      :: Opts -> Grammar T.Text env a -> T.Text -> Result T.Text a #-}
+      :: Opts -> Grammar T.Text nt a -> T.Text -> Result T.Text a #-}
 {-# SPECIALIZE parseWith
-      :: Opts -> Grammar B.ByteString env a
+      :: Opts -> Grammar B.ByteString nt a
       -> B.ByteString -> Result B.ByteString a #-}
 
 --------------------------------------------------------------------------------
@@ -170,42 +171,88 @@ parseWith opts g = run
 -- | A rule table in which every body has already been compiled to a 'Step'.
 -- Built with a knot so that mutually recursive rules resolve to each other's
 -- closures.
-data CRules (s :: Type) (env :: Env) (defs :: Env) where
-  CNil  :: CRules s env '[]
+data CRules (s :: Type) (defs :: Env) where
+  CNil  :: CRules s '[]
   CCons :: Step s a
-        -> CRules s env rest
-        -> CRules s env ('(n, 'EnvEntry a) ': rest)
+        -> CRules s rest
+        -> CRules s ('(n, 'EnvEntry a) ': rest)
 
-clookup :: Member n defs a -> CRules s env defs -> Step s a
+clookup :: Member n defs a -> CRules s defs -> Step s a
 clookup Here      (CCons f _)    = f
 clookup (There m) (CCons _ rest) = clookup m rest
+
+-- | A compiled rule, wrapped so that 'Step' can be the image of a 'Table'.
+newtype CStep s a = CStep { unCStep :: Step s a }
 
 -- | Traverse the grammar once and return a closure that consumes input.
 --
 -- The traversal resolves every non-terminal reference to the corresponding
 -- compiled rule, so at parse time a non-terminal costs one indirect call
 -- instead of a walk down the rule list.
-compileGrammar :: forall s env a.
-                  Stream s => Int -> Grammar s env a -> Step s a
-compileGrammar tw (Grammar rules start) = compileE tw table start
+compileGrammar :: forall s nt a.
+                  Stream s => Int -> Grammar s nt a -> Step s a
+compileGrammar tw (Grammar rules start) = compileListed tw rules start
+compileGrammar tw (Keyed rules start)   = compileKeyed tw tabulate rules start
+
+-- | A grammar over a type-level environment: the rules are compiled into a
+-- list, and a reference is resolved by following its membership proof down
+-- that list, once, while the grammar is being compiled.
+compileListed :: forall s env a. Stream s
+              => Int -> Rules s env env -> PExp s (InEnv env) a -> Step s a
+compileListed tw rules start = compileE tw resolve start
   where
-    table :: CRules s env env
+    table :: CRules s env
     table = build rules
 
-    build :: forall defs. Rules s env defs -> CRules s env defs
+    resolve :: forall b. InEnv env b -> Step s b
+    resolve (InEnv w) = clookup w table
+
+    build :: forall defs. Rules s env defs -> CRules s defs
     build RNil                = CNil
-    build (RCons _ body rest) = CCons (compileE tw table body) (build rest)
+    build (RCons _ body rest) = CCons (compileE tw resolve body) (build rest)
+{-# INLINABLE compileListed #-}
+
+-- | A grammar over declared keys: the compiled rules are tabulated once, and
+-- a reference is resolved by looking its key up in the table.
+--
+-- The knot is safe for the same reason as the list's: looking a key up yields
+-- the (lazy) compiled rule without running it, so compiling a rule body never
+-- forces the rules it refers to.
+--
+-- 'tabulate' is an argument rather than a 'Tabulate' constraint, and that is
+-- a matter of performance, not of style.  GHC specialises a function only on
+-- dictionaries it knows, and at the call in 'compileGrammar' the key type is
+-- still a variable: with the constraint, the @SPECIALIZE@ pragmas below never
+-- reached this function, and a grammar over keys ran the whole parse through
+-- the 'Stream' dictionary — on MiniPython, 37% slower and 48% more allocation
+-- per character than the same grammar over an environment.  With only
+-- 'Stream' left to specialise on, the two compile to the same code.
+compileKeyed :: forall s nt a. Stream s
+             => Int
+             -> (forall f. (forall b. nt b -> f b) -> Table nt f)
+             -> (forall b. nt b -> PExp s nt b)
+             -> PExp s nt a
+             -> Step s a
+compileKeyed tw tab rules start = compileE tw resolve start
+  where
+    table :: Table nt (CStep s)
+    table = tab (\k -> CStep (compileE tw resolve (rules k)))
+
+    resolve :: forall b. nt b -> Step s b
+    resolve k = unCStep (lookupTable table k)
+{-# INLINABLE compileKeyed #-}
+
 {-# INLINABLE compileGrammar #-}
 {-# INLINABLE compileE #-}
 -- Without these the whole parse runs through a 'Stream' dictionary, and the
 -- per-character path stops being allocation-free.  Callers using another
 -- stream should mark their own monomorphic parser bindings INLINABLE.
 {-# SPECIALIZE compileGrammar
-      :: Int -> Grammar String env a -> Step String a #-}
+      :: Int -> Grammar String nt a -> Step String a #-}
 {-# SPECIALIZE compileGrammar
-      :: Int -> Grammar T.Text env a -> Step T.Text a #-}
+      :: Int -> Grammar T.Text nt a -> Step T.Text a #-}
 {-# SPECIALIZE compileGrammar
-      :: Int -> Grammar B.ByteString env a -> Step B.ByteString a #-}
+      :: Int -> Grammar B.ByteString nt a -> Step B.ByteString a #-}
 
 -- | Does this class avoid the two characters whose column advance is not
 -- simply @+1@?  When it does, the column after a matched run is the column
@@ -213,9 +260,9 @@ compileGrammar tw (Grammar rules start) = compileE tw table start
 simpleCS :: CharSet -> Bool
 simpleCS cs = not (memberCS '\n' cs) && not (memberCS '\t' cs)
 
-compileE :: forall s env a.
-            Stream s => Int -> CRules s env env -> PExp s env a -> Step s a
-compileE tw table = comp
+compileE :: forall s nt a. Stream s
+         => Int -> (forall b. nt b -> Step s b) -> PExp s nt a -> Step s a
+compileE tw resolve = comp
   where
     -- Select the stream operations once per compiled grammar.  Leaving them
     -- as class-method applications would repeat the dictionary lookup on
@@ -228,7 +275,7 @@ compileE tw table = comp
     !packS   = packString    :: String -> s
     !emptyS  = packS []
 
-    comp :: forall b. PExp s env b -> Step s b
+    comp :: forall b. PExp s nt b -> Step s b
 
     comp (Pure x) = \_ st -> (# | (# x, st #) #)
 
@@ -245,14 +292,9 @@ compileE tw table = comp
     comp (Span  cs) = spanChunk (\c -> memberCS c cs) (simpleCS cs) False
     comp (Span1 cs) = spanChunk (\c -> memberCS c cs) (simpleCS cs) True
 
-    -- 'a' comes from the constructor's own equality
-    -- @Lookup n env ~ 'EnvEntry a@, so no type family has to be reduced
-    -- here at all.
-    comp (NT @n _) = clookup (member @n @env) table
-
-    -- The witness came with the reference, so there is no search at all:
-    -- neither here nor, more to the point, in the type checker.
-    comp (NTW _ w) = clookup w table
+    -- The key has already been resolved to its compiled rule by whoever
+    -- built @resolve@; this is one lookup per occurrence, at compile time.
+    comp (NT k) = resolve k
 
     -- Neither this nor 'Map' below allocates: the intermediate results travel
     -- in registers, so a quasi-quoted rule of @n@ items costs @n@ calls and

@@ -2,6 +2,131 @@
 
 ## Unreleased
 
+### Breaking. A non-terminal is a key, and `pegGrammar` declares the key type
+
+`PExp` and `Grammar` are indexed by the type of the grammar's non-terminal
+keys, `nt :: Type -> Type`, instead of by a type-level environment:
+
+```haskell
+data PExp    (s :: Type) (nt :: Type -> Type) (a :: Type)
+data Grammar (s :: Type) (nt :: Type -> Type) (a :: Type)
+
+NT :: nt a -> PExp s nt a
+```
+
+`pegGrammar` in declaration position now declares a GADT with one constructor
+per rule, its `Tabulate` instance, and one binding per rule whose signature is
+the rule's annotation:
+
+```haskell
+data ArithEnv s a where
+  ArithEnv_expr :: ArithEnv s Exp
+  ArithEnv_term :: ArithEnv s Exp
+instance Tabulate (ArithEnv s)
+arith'expr :: Stream s => PExp s (ArithEnv s) Exp
+arith      :: Stream s => Grammar s (ArithEnv s) Exp   -- = Keyed rules start
+```
+
+A grammar written that way needs no change beyond `{-# LANGUAGE GADTs #-}`,
+which the splice asks for by name when it is missing: `%env` still names the
+generated type and `Grammar s (ArithEnv s) Exp` is still its signature.
+
+A type-level environment is still supported, through the key `InEnv env`, a
+membership proof into it.  `nt @"expr"`, `ntw`, `pegRules`, `RCons` and
+`pegGrammar` in expression position all go through it, and so does a
+hand-written environment, whose signatures gain an `InEnv`:
+
+```haskell
+calc :: Stream s => Grammar s (InEnv (CalcEnv s)) Expr   -- was Grammar s (CalcEnv s) Expr
+```
+
+A combinator over expressions, `PExp s env a -> PExp s env a`, works unchanged
+over either kind of key.  `PEG.Syntax.NTW` is gone (`ntw` remains, as
+`NT . InEnv`), and `nt` no longer asks for `KnownSymbol`.
+
+**Why.**  Removing the FIRST sets from the environment left a cost that grew
+faster than the grammar, and it was the proof itself.  A reference into a list
+carries `There (There ... Here)`, and GHC's evidence for it is proportional to
+the rule's depth times the size of what is left of the list.  Handing GHC the
+proof instead of having it search saved a constant; the proof still had to be
+checked.  Through `pegGrammar` a 128-rule grammar needed 2.2 GB of heap, and a
+256-rule one did not fit in 8 GB.  A constructor's type does not depend on the
+rest of the grammar (`ghc -fno-code`, `bench-compile/`):
+
+| rules | before | key type |
+|---|---|---|
+| 64   | 1.16 s,   385 MiB | 0.44 s,  49 MiB |
+| 128  | 5.70 s, 2 180 MiB | 0.50 s,  51 MiB |
+| 256  | exhausts 8 GB     | 0.57 s,  80 MiB |
+| 512  | —                 | 0.70 s,  98 MiB |
+| 1024 | —                 | 1.17 s, 159 MiB |
+
+The per-rule bindings also cut what the simplifier does with a grammar:
+MiniPython at `-O1` went from 2.4 s and 177 MiB to 1.5 s and 111 MiB.
+
+Parsing is unaffected: the allocation benchmark agrees with the previous
+commit on every row, to within 0.1 byte per input byte on three of the
+smallest inputs, and MiniPython over its key type allocates what it does over
+an environment.
+
+### Added
+
+- `PEG.Key`: `Tabulate`, `Table` and `InEnv`.
+- `Keyed`, the `Grammar` constructor for a key type.
+- `%param name :: Type` in `pegGrammar`: the grammar and every rule take an
+  argument in scope in every semantic action, which is what a grammar that
+  used to be written in expression position to capture a variable needs.
+  Repeatable.
+- `examples/MiniPython.hs`, the 27-rule grammar of the MiniPython language of
+  the compilers course at UFOP, and a `minipython` mode in `bench-compile/`.
+- `bench-compile/run.sh` reports GHC's peak heap, and has `qq-grammar-expr`
+  (a grammar over a list, through `pegGrammar`) and `lookup-key` (the keys
+  with no library) modes.
+
+### Shared prefixes of alternatives are parsed once
+
+The quasi-quoters translate consecutive alternatives that begin with the same
+items as the common prefix followed by a choice of the remainders:
+`A B / A C` becomes `A (B / C)`, recursively, with each remainder's action
+still seeing the prefix under its own labels.  In a PEG the two accept the
+same inputs with the same results, since `A` would parse exactly the same
+thing the second time.
+
+Without it, a precedence level written `e:or_expr ws "if" ... / e:or_expr`
+parses its operand twice, and the cost is exponential in how deeply the
+*input* nests.  On MiniPython, `print(str(mdc(f(g(x)))))` took 348 ms, eight
+times as long per level; a 13.6 KB file of the course's examples took 965 ms.
+Both now take under 15 ms.  The copy of the library the course's reference
+compiler used to vendor escaped this only by accident: its grammar was static
+combinator code, and GHC's CSE shared the repeated call.  Compiled with
+`-O0` it took 6.9 s on the same expression.
+
+Only consecutive alternatives are grouped, and an alternative that is not a
+sequence is left alone.  `PEG.QQ.Syntax`'s `PExpr`, `Item` and `RelS` now
+derive `Eq`.
+
+### Fixed
+
+- The library builds with GHC 9.6 again, as `tested-with` and the
+  `template-haskell >= 2.19` bound said it did: `PEG.Parse` no longer needs
+  `TypeAbstractions`, the binders `pegGrammar` generates go through
+  `PEG.QQ.Compat` rather than naming `BndrReq`, which template-haskell 2.21
+  introduced, and the analysis test-suite no longer relies on `foldl'` being
+  in the Prelude.
+
+### The analysis is linear
+
+`PEG.Analysis` ran on every splice and computed every rule's FIRST set by
+Kleene iteration over whole sets, rebuilding and comparing all of them on
+each pass.  A precedence ladder of `N` rules has FIRST sets of `N^2/2` names,
+and on 1024 rules that was 49 of the 58 seconds a keyed grammar took to
+compile.  The diagnostics need none of it: nullability is a fixpoint over
+booleans, left recursion is a cyclic strongly connected component of the
+direct-head graph, and the cycle reported is a shortest one, found breadth
+first.  The FIRST sets in the environment `analyse` returns are that graph's
+closure, built only when the environment is inspected — 0.5 s at 1024 rules
+when they are.  `typed-peg` now depends on `containers`.
+
 ### Breaking. The environment no longer carries FIRST sets
 
 An entry of a grammar's environment was a rule's nullability, its FIRST set

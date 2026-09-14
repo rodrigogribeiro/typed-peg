@@ -34,7 +34,7 @@ data Directive = Directive String String
   deriving Show
 
 data Item = Item (Maybe String) PExpr
-  deriving Show
+  deriving (Eq, Show)
 
 data PExpr
   = EChoice  [PExpr]
@@ -52,7 +52,7 @@ data PExpr
   | EIndent  RelS PExpr
   | EPos     RelS PExpr
   | EAlign   PExpr
-  deriving Show
+  deriving (Eq, Show)
 
 data RelS
   = RGt
@@ -61,7 +61,7 @@ data RelS
   | RAny
   | ROffset Int
   | RNamed  String
-  deriving Show
+  deriving (Eq, Show)
 
 type P a = String -> Either String (a, String)
 

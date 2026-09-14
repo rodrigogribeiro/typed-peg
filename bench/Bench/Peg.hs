@@ -69,7 +69,7 @@ type ArithEnv =
    ]
 
 {-# INLINABLE arith #-}
-arith :: Stream s => Grammar s ArithEnv Exp
+arith :: Stream s => Grammar s (InEnv ArithEnv) Exp
 arith =
   Grammar
     [pegRules|
@@ -93,7 +93,7 @@ type CsvEnv =
    ]
 
 {-# INLINABLE csv #-}
-csv :: Stream s => Grammar s CsvEnv [[Int]]
+csv :: Stream s => Grammar s (InEnv CsvEnv) [[Int]]
 csv =
   Grammar
     [pegRules|
@@ -118,7 +118,7 @@ type IdentEnv s =
    ]
 
 {-# INLINABLE idents #-}
-idents :: Stream s => Grammar s (IdentEnv s) [s]
+idents :: Stream s => Grammar s (InEnv (IdentEnv s)) [s]
 idents =
   Grammar
     [pegRules|
@@ -162,7 +162,7 @@ type JsonEnv =
    ]
 
 {-# INLINABLE json #-}
-json :: Stream s => Grammar s JsonEnv JValue
+json :: Stream s => Grammar s (InEnv JsonEnv) JValue
 json =
   Grammar
     [pegRules|
@@ -207,7 +207,7 @@ type QuotedClsEnv s =
    ]
 
 {-# INLINABLE quotedNot #-}
-quotedNot :: Stream s => Grammar s QuotedNotEnv [String]
+quotedNot :: Stream s => Grammar s (InEnv QuotedNotEnv) [String]
 quotedNot =
   Grammar
     [pegRules|
@@ -217,7 +217,7 @@ quotedNot =
     (nt @"qs")
 
 {-# INLINABLE quotedCls #-}
-quotedCls :: Stream s => Grammar s (QuotedClsEnv s) [s]
+quotedCls :: Stream s => Grammar s (InEnv (QuotedClsEnv s)) [s]
 quotedCls =
   Grammar
     [pegRules|

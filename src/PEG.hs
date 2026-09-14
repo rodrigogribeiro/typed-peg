@@ -16,15 +16,15 @@
 -- @
 --
 -- 1. Write the grammar with the 'PEG.QQ.pegGrammar' quasi-quoter, giving each
---    rule its result type.  It declares the environment, the grammar and its
---    signature.
+--    rule its result type.  It declares the grammar's key type — one
+--    constructor per rule, see "PEG.Key" — the grammar and its signature.
 -- 2. Run the grammar on a 'String' with 'parse' or 'parseWith'.
 --
--- The environment can also be declared by hand — a type-level list of
--- @(name, entry)@ pairs, see 'PEG.Type.Env' — and the rules built with
--- 'PEG.QQ.pegRules' or the combinators in "PEG.Syntax".  That is what
--- 'PEG.QQ.pegGrammar' generates, and it stays supported; it is only more to
--- write and slower to compile.
+-- The rules can also be named by a type-level list declared by hand — see
+-- 'PEG.Type.Env' — and built with 'PEG.QQ.pegRules' or the combinators in
+-- "PEG.Syntax", as a @'Grammar' s ('InEnv' env) a@.  That stays supported; it
+-- is more to write, and compiling it costs more than linearly in the number of
+-- rules.
 --
 -- See the @examples/@ directory for complete working grammars.
 module PEG
@@ -33,6 +33,7 @@ module PEG
   , module PEG.Type
   , module PEG.TyLevel
   , module PEG.Member
+  , module PEG.Key
   , module PEG.Indent
   , module PEG.Syntax
   , module PEG.Grammar
@@ -43,6 +44,7 @@ import PEG.CharSet
 import PEG.Grammar
 import PEG.Stream
 import PEG.Indent
+import PEG.Key
 import PEG.Member
 import PEG.Parse
 import PEG.Syntax

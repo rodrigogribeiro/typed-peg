@@ -139,7 +139,7 @@ type CalcEnv s =
 -- Note what is /not/ here: no @try@, no left recursion, and no rule that can
 -- loop.  @expr <- expr '+' term@ would be rejected by 'PEG.Analysis' when the
 -- @pegRules@ block below is spliced, naming @expr@ and the cycle.
-calc :: Stream s => Grammar s (CalcEnv s) Expr
+calc :: Stream s => Grammar s (InEnv (CalcEnv s)) Expr
 calc =
   Grammar
     [pegRules|
@@ -157,7 +157,7 @@ calc =
 -- by a negative lookahead on the identifier-continuation class.
 type KwEnv = '[ '("kw", 'EnvEntry String) ]
 
-kwG :: Stream s => Grammar s KwEnv String
+kwG :: Stream s => Grammar s (InEnv KwEnv) String
 kwG = Grammar [pegRules| kw <- k:"negate" ![a-zA-Z0-9_]  { k } |] (nt @"kw")
 
 --------------------------------------------------------------------------------
@@ -172,7 +172,7 @@ kwG = Grammar [pegRules| kw <- k:"negate" ![a-zA-Z0-9_]  { k } |] (nt @"kw")
 type OpEnv =
   '[ '("op", 'EnvEntry (Expr -> Expr -> Expr)) ]
 
-addOp :: Stream s => Grammar s OpEnv (Expr -> Expr -> Expr)
+addOp :: Stream s => Grammar s (InEnv OpEnv) (Expr -> Expr -> Expr)
 addOp = Grammar [pegRules| op <- '+' { Add } / '-' { Sub } |] (nt @"op")
 
 --------------------------------------------------------------------------------
@@ -194,7 +194,7 @@ type ProgEnv s =
 -- illustrates is the one PEG newcomers get wrong: in an ordered choice the
 -- longer alternative must come first, because the first success wins and
 -- there is no backtracking into a committed branch.
-prog :: Stream s => Grammar s (ProgEnv s) [Asgn]
+prog :: Stream s => Grammar s (InEnv (ProgEnv s)) [Asgn]
 prog =
   Grammar
     [pegRules|

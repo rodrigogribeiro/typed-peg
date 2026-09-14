@@ -11,11 +11,12 @@
 
 -- | The PEG expression GADT and combinator API.
 --
--- 'PExp' is the core type: a GADT indexed by the input stream, the grammar
--- environment, and the Haskell result type.  Every non-terminal reference is
--- checked against the environment, so @nt \@\"expr\"@ is a type error unless
--- the grammar has a rule called @expr@, and it has whatever type that rule
--- has.
+-- 'PExp' is the core type: a GADT indexed by the input stream, the type of
+-- the grammar's non-terminal keys (see "PEG.Key"), and the Haskell result
+-- type.  A non-terminal reference is a key, so it can only name a rule that
+-- exists and only at the type that rule has: @NT ArithEnv_expr@ for a
+-- generated grammar, @nt \@\"expr\"@ for one whose environment is a
+-- type-level list.
 --
 -- The first parameter, @s@, is the stream the expression consumes; see
 -- "PEG.Stream".  It appears in the type because a character class produces a
@@ -47,8 +48,9 @@
 -- lexeme :: PExp s env ty a -> PExp s env (SeqTy ty ('MkTy 'True '[])) a
 -- @
 --
--- is now @PExp s env a -> PExp s env a@, and composes without the caller
--- having to get a nesting of type families right.
+-- is now @PExp s nt a -> PExp s nt a@, and composes without the caller
+-- having to get a nesting of type families right.  It works unchanged over
+-- both kinds of key.
 module PEG.Syntax
   ( Name (..)
   , PExp (..)
@@ -75,11 +77,12 @@ module PEG.Syntax
   ) where
 
 import Data.Kind    (Type)
-import GHC.TypeLits (Symbol, KnownSymbol)
+import GHC.TypeLits (Symbol)
 
 import PEG.CharSet (CharSet)
 import qualified PEG.CharSet as CS
 import PEG.Indent (Rel)
+import PEG.Key
 import PEG.Type
 import PEG.TyLevel
 import PEG.Member
@@ -98,7 +101,7 @@ data Name (n :: Symbol) = Name
 -- * 'Span'   — match a run of characters of a 'CharSet', possibly empty
 -- * 'Span1'  — match a non-empty run of characters of a 'CharSet'
 -- * 'AnyChar'— match any character
--- * 'NT'     — invoke a named non-terminal
+-- * 'NT'     — invoke a non-terminal, named by its key
 -- * 'Seq'    — sequential composition (@e1 e2@)
 -- * 'Choice' — ordered choice (@e1 \/ e2@)
 -- * 'Star'   — Kleene star (@e*@)
@@ -107,159 +110,136 @@ data Name (n :: Symbol) = Name
 -- * 'Indent' — require the next token to satisfy an indentation relation
 -- * 'Position'— set the column relation for tokens inside the sub-expression
 -- * 'Align'  — require the next token to be aligned with the current position
-data PExp (s :: Type) (env :: Env) (a :: Type) where
-  Pure     :: a -> PExp s env a
-  Term     :: Char -> PExp s env Char
+data PExp (s :: Type) (nt :: Type -> Type) (a :: Type) where
+  Pure     :: a -> PExp s nt a
+  Term     :: Char -> PExp s nt Char
   -- | Match one character of a class.  This is what a character class such as
   -- @[a-zA-Z0-9_]@ compiles to: a single bit test instead of a chain of
   -- ordered choices.
-  Sat      :: !CharSet -> PExp s env Char
+  Sat      :: !CharSet -> PExp s nt Char
   -- | Match a string literal.  The string must be non-empty; use 'pureP' @""@
   -- otherwise.
   --
   -- The result is the literal itself, so it is shared rather than sliced out
   -- of the input.
-  Str      :: String -> PExp s env String
+  Str      :: String -> PExp s nt String
   -- | Match the longest run of characters belonging to a class, possibly
   -- empty — what @[a-z]*@ compiles to.  The result is a chunk of the input
   -- stream, so on 'Data.Text.Text' this is a slice and costs no copy.
-  Span     :: !CharSet -> PExp s env s
+  Span     :: !CharSet -> PExp s nt s
   -- | As 'Span', but the run must be non-empty: @[a-z]+@.
-  Span1    :: !CharSet -> PExp s env s
-  AnyChar  :: PExp s env Char
-  -- The environment is looked up /once/, by the equality below, and the
-  -- result is bound to the rigid variable @a@.  Passing @ResOf (Lookup n
-  -- env)@ straight to 'KnownMember' instead makes GHC re-reduce the lookup at
-  -- every step of the instance chain that walks @env@, which costs
-  -- @O(|env|^2)@ per non-terminal occurrence.
-  NT       :: forall n s env a.
-              ( KnownSymbol n
-              , Lookup n env ~ 'EnvEntry a
-              , KnownMember n env a
-              )
-           => Name n
-           -> PExp s env a
-  -- | As 'NT', but the proof that the rule is in the environment is supplied
-  -- rather than searched for.
-  --
-  -- The @Lookup@ equality is kept, so this is not a weaker claim than 'NT':
-  -- @a@ still comes from the environment, and a witness that points at a
-  -- different rule does not type-check.  What is gone is the 'KnownMember'
-  -- instance chain, which walks the environment one entry at a time for every
-  -- occurrence of every non-terminal.  On a 64-rule grammar that chain is
-  -- about three quarters of what resolving a reference costs; see
-  -- @bench-compile/@.
-  --
-  -- A splice knows each rule's position and so can write the witness down.
-  -- Hand-written grammars have nothing to gain here and should keep using
-  -- 'nt'.
-  NTW      :: forall n s env a.
-              ( KnownSymbol n
-              , Lookup n env ~ 'EnvEntry a
-              )
-           => Name n
-           -> Member n env a
-           -> PExp s env a
-  Seq      :: PExp s env (a -> b)
-           -> PExp s env a
-           -> PExp s env b
-  Choice   :: PExp s env a
-           -> PExp s env a
-           -> PExp s env a
+  Span1    :: !CharSet -> PExp s nt s
+  AnyChar  :: PExp s nt Char
+  -- | A reference to the rule the key names.  Its result type is the key's
+  -- index, so nothing about the rest of the grammar is consulted.
+  NT       :: nt a -> PExp s nt a
+  Seq      :: PExp s nt (a -> b)
+           -> PExp s nt a
+           -> PExp s nt b
+  Choice   :: PExp s nt a
+           -> PExp s nt a
+           -> PExp s nt a
   -- | Kleene star.  The argument must not match the empty string, or the
   -- parser will not terminate; that is checked by "PEG.Analysis" when the
   -- grammar is spliced, and not at all when a 'Star' is built by hand.
-  Star     :: PExp s env a
-           -> PExp s env [a]
-  Not      :: PExp s env a
-           -> PExp s env ()
+  Star     :: PExp s nt a
+           -> PExp s nt [a]
+  Not      :: PExp s nt a
+           -> PExp s nt ()
   Map      :: (a -> b)
-           -> PExp s env a
-           -> PExp s env b
+           -> PExp s nt a
+           -> PExp s nt b
   Indent   :: Rel n
-           -> PExp s env a
-           -> PExp s env a
+           -> PExp s nt a
+           -> PExp s nt a
   Position :: Rel n
-           -> PExp s env a
-           -> PExp s env a
-  Align    :: PExp s env a
-           -> PExp s env a
+           -> PExp s nt a
+           -> PExp s nt a
+  Align    :: PExp s nt a
+           -> PExp s nt a
 
-instance Functor (PExp s env) where
+instance Functor (PExp s nt) where
   fmap = Map
 
--- | Reference a non-terminal by name using a type application:
--- @nt \@\"ruleName\"@.
+-- | Reference a rule of a type-level environment by name, using a type
+-- application: @nt \@\"ruleName\"@.
 --
 -- The name is deliberately the /first/ quantified variable, so that
 -- @nt \@\"expr\"@ keeps working: the stream and environment are recovered by
 -- unification.
+--
+-- The environment is searched by the 'KnownMember' instance chain, once for
+-- every occurrence, which is what makes a large environment slow to compile.
+-- A grammar written with 'PEG.QQ.pegGrammar' in declaration position has
+-- declared keys instead, and does not search anything.
 nt :: forall n env s a.
-      ( KnownSymbol n
-      , Lookup n env ~ 'EnvEntry a
+      ( Lookup n env ~ 'EnvEntry a
       , KnownMember n env a
       )
-   => PExp s env a
-nt = NT (Name :: Name n)
+   => PExp s (InEnv env) a
+nt = NT (InEnv (member :: Member n env a))
 
--- | Reference a non-terminal by name, supplying the membership proof:
--- @ntw \@"ruleName" (There Here)@.
+-- | Reference a rule of a type-level environment by name, supplying the
+-- membership proof: @ntw \@"ruleName" (There Here)@.
 --
--- This is what a generated grammar emits; see 'NTW'.
+-- The @Lookup@ equality is kept, so this is not a weaker claim than 'nt': @a@
+-- still comes from the environment, and a witness that points at a different
+-- rule does not type-check.  What is gone is the 'KnownMember' search.  The
+-- proof itself still costs the type checker in proportion to its depth; see
+-- "PEG.Key".
 ntw :: forall n env s a.
-       ( KnownSymbol n
-       , Lookup n env ~ 'EnvEntry a
+       ( Lookup n env ~ 'EnvEntry a
        )
     => Member n env a
-    -> PExp s env a
-ntw = NTW (Name :: Name n)
+    -> PExp s (InEnv env) a
+ntw w = NT (InEnv w)
 
 -- | Succeed without consuming any input.
-pureP :: a -> PExp s env a
+pureP :: a -> PExp s nt a
 pureP = Pure
 
 -- | Apply a function to the result of an expression.
-fmapP :: (a -> b) -> PExp s env a -> PExp s env b
+fmapP :: (a -> b) -> PExp s nt a -> PExp s nt b
 fmapP = Map
 
 -- | Require the sub-expression to satisfy the given column relation.
-indent :: Rel n -> PExp s env a -> PExp s env a
+indent :: Rel n -> PExp s nt a -> PExp s nt a
 indent = Indent
 
 -- | Override the token mode for the sub-expression.
-position :: Rel n -> PExp s env a -> PExp s env a
+position :: Rel n -> PExp s nt a -> PExp s nt a
 position = Position
 
 -- | Require the sub-expression to start at the current alignment column.
-align :: PExp s env a -> PExp s env a
+align :: PExp s nt a -> PExp s nt a
 align = Align
 
 -- | Infix synonym for 'fmapP'.
-(<$>.) :: (a -> b) -> PExp s env a -> PExp s env b
+(<$>.) :: (a -> b) -> PExp s nt a -> PExp s nt b
 (<$>.) = Map
 infixl 4 <$>.
 
 -- | Infix sequential composition.
-(<*>.) :: PExp s env (a -> b)
-       -> PExp s env a
-       -> PExp s env b
+(<*>.) :: PExp s nt (a -> b)
+       -> PExp s nt a
+       -> PExp s nt b
 (<*>.) = Seq
 infixl 4 <*>.
 
 -- | Sequence two expressions, discarding the result of the first.
-(.>>.) :: PExp s env a
-       -> PExp s env b
-       -> PExp s env b
+(.>>.) :: PExp s nt a
+       -> PExp s nt b
+       -> PExp s nt b
 e1 .>>. e2 = Map (\_ b -> b) e1 <*>. e2
 infixl 6 .>>.
 
 -- | Infix ordered choice (@e1 \/ e2@): try @e1@; if it fails, try @e2@.
-(.||.) :: PExp s env a -> PExp s env a -> PExp s env a
+(.||.) :: PExp s nt a -> PExp s nt a -> PExp s nt a
 (.||.) = Choice
 infixl 5 .||.
 
 -- | Optional match: @opt e = (Just \<$\>. e) .||. pureP Nothing@.
-opt :: PExp s env a -> PExp s env (Maybe a)
+opt :: PExp s nt a -> PExp s nt (Maybe a)
 opt e = (Just <$>. e) .||. pureP Nothing
 
 -- | One-or-more: @plus e = (:) \<$\>. e \<*\>. Star e@.
@@ -268,40 +248,40 @@ opt e = (Just <$>. e) .||. pureP Nothing
 --
 -- For a single character class, prefer 'spanOf1': it matches the whole run in
 -- one scan and returns a chunk of the stream instead of a list.
-plus :: PExp s env a -> PExp s env [a]
+plus :: PExp s nt a -> PExp s nt [a]
 plus e = (:) <$>. e <*>. Star e
 
 -- | Match any character of the given set.
-sat :: CharSet -> PExp s env Char
+sat :: CharSet -> PExp s nt Char
 sat = Sat
 
 -- | Match any character inside one of the given inclusive ranges.
 -- This is the representation the quasi-quoter emits for @[a-z]@ and
 -- friends.
-charClass :: [(Char, Char)] -> PExp s env Char
+charClass :: [(Char, Char)] -> PExp s nt Char
 charClass = Sat . CS.fromRanges
 
 -- | Match any character /outside/ the given inclusive ranges.
 -- The quasi-quoter emits this for @[^\"]@.
-notCharClass :: [(Char, Char)] -> PExp s env Char
+notCharClass :: [(Char, Char)] -> PExp s nt Char
 notCharClass = Sat . CS.notInRanges
 
 -- | Match the longest run of characters of the set, possibly empty.  The
 -- result is a chunk of the input stream.
-spanOf :: CharSet -> PExp s env s
+spanOf :: CharSet -> PExp s nt s
 spanOf = Span
 
 -- | Match a non-empty run of characters of the set.
-spanOf1 :: CharSet -> PExp s env s
+spanOf1 :: CharSet -> PExp s nt s
 spanOf1 = Span1
 
 -- | Match any character in the given list. The list must be non-empty.
-oneOf :: [Char] -> PExp s env Char
+oneOf :: [Char] -> PExp s nt Char
 oneOf []  = error "PEG.Syntax.oneOf: empty character class"
 oneOf [c] = Term c
 oneOf cs  = Sat (CS.fromList cs)
 
 -- | Match an exact string literal. The string must be non-empty.
-stringNE :: String -> PExp s env String
+stringNE :: String -> PExp s nt String
 stringNE [] = error "PEG.Syntax.stringNE: empty string"
 stringNE s  = Str s

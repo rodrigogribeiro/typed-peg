@@ -1,14 +1,15 @@
 cabal-version:      3.0
 name:               typed-peg
-version:            0.3.0.0
+version:            0.4.0.0
 synopsis:           Type-safe PEG parser combinators
 description:
   A library for building Parsing Expression Grammars parsers
-  with compile-time safety guarantees. Non-terminal references are
-  checked at the type level against an environment binding each rule
-  to the type it returns; left recursion, a repetition that cannot
-  consume input, an undefined non-terminal and a duplicate rule are
-  reported when the grammar is spliced, naming the rule.
+  with compile-time safety guarantees. A non-terminal reference is a
+  key whose type is the result of the rule it names, so references are
+  checked by the type checker in time linear in the size of the grammar;
+  left recursion, a repetition that cannot consume input, an undefined
+  non-terminal and a duplicate rule are reported when the grammar is
+  spliced, naming the rule.
   .
   A quasi-quoter (@PEG.QQ@) allows writing grammars in a concrete
   DSL syntax. Indentation-sensitive parsing is supported natively
@@ -31,7 +32,7 @@ extra-source-files: README.md
 extra-doc-files:
   CHANGELOG.md
   peg-patterns.md
-tested-with:        GHC == 9.10.3
+tested-with:        GHC == 9.6.6 || == 9.10.3
 
 source-repository head
   type:     git
@@ -65,6 +66,7 @@ library
     PEG.CharSet
     PEG.Grammar
     PEG.Indent
+    PEG.Key
     PEG.Member
     PEG.Parse
     PEG.QQ
@@ -75,9 +77,12 @@ library
     PEG.Syntax
     PEG.TyLevel
     PEG.Type
+  other-modules:
+    PEG.QQ.Compat
   build-depends:
       base             >= 4.18 && < 5
     , bytestring       >= 0.11 && < 0.13
+    , containers       >= 0.6  && < 0.8
     , template-haskell >= 2.19 && < 2.24
     , text             >= 2.0  && < 2.2
 
@@ -86,7 +91,7 @@ test-suite typed-peg-examples
   type:            exitcode-stdio-1.0
   hs-source-dirs:  examples
   main-is:         Main.hs
-  other-modules:   Arith, Layout, Compat, Patterns
+  other-modules:   Arith, Layout, Compat, Patterns, MiniPython
   build-depends:
       base
     , bytestring

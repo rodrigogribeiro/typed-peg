@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds        #-}
+{-# LANGUAGE GADTs            #-}
 {-# LANGUAGE QuasiQuotes      #-}
 {-# LANGUAGE TemplateHaskell  #-}
 {-# LANGUAGE TypeApplications #-}
@@ -50,14 +51,15 @@ addOp l ('*', r) = Mul l r
 addOp l ('/', r) = Div l r
 addOp _ (c  , _) = error ("addOp: unexpected operator " ++ show c)
 
--- | The environment, the signature and the grammar are all declared by the
--- quasi-quoter.  A rule's result type is the one thing the grammar does not
--- determine, which is what the @:: T@ annotations are for; left recursion and
--- the rest are checked by 'PEG.Analysis' at the splice.
+-- | The key type, a binding per rule, the signature and the grammar are all
+-- declared by the quasi-quoter.  A rule's result type is the one thing the
+-- grammar does not determine, which is what the @:: T@ annotations are for;
+-- left recursion and the rest are checked by 'PEG.Analysis' at the splice.
 --
--- The annotations are still claims that GHC checks, not assertions:
--- 'PEG.Grammar.Grammar' demands @Rules s env env@, so an annotation that
--- disagrees with what the rule body actually returns is a type error here.
+-- The annotations are still claims that GHC checks, not assertions: each is
+-- the signature of its rule's binding (@arith'term :: Stream s => PExp s
+-- (ArithEnv s) Exp@), so an annotation that disagrees with what the rule body
+-- actually returns is a type error here, reported against that rule.
 --
 -- Being polymorphic in the stream has a cost: this is a function of a
 -- 'Stream' dictionary rather than a constant, so the compiled parser is not

@@ -31,8 +31,10 @@ module PEG.QQ
   , pegGrammar
   ) where
 
-import Control.Monad              (foldM)
-import Data.List                  (elemIndex, nub)
+import Control.Monad              (foldM, unless)
+import Data.Data                  (Data, gmapQ)
+import Data.Typeable              (cast)
+import Data.List                  (elemIndex, groupBy, nub)
 import Language.Haskell.TH        (Exp (..), Pat (..), Q)
 import qualified Language.Haskell.TH      as TH
 import Language.Haskell.TH.Quote  (QuasiQuoter (..))
@@ -40,6 +42,7 @@ import Language.Haskell.TH.Quote  (QuasiQuoter (..))
 import PEG
 import PEG.Analysis  (Diagnostic (..), World (..), analyse, analyseWith,
                       renderDiagnostic, spannable)
+import PEG.QQ.Compat (requiredKindedTV, requiredTV)
 import PEG.QQ.HsExp  (parseHsExp, parseHsType)
 import PEG.QQ.Syntax (Def (..), Directive (..), Item (..), PExpr (..),
                       RelS (..), parseDirectives, parseExpr, parseGrammar,
@@ -110,13 +113,15 @@ translateExprWith ntRef = go
     go (EAlign e) = do
       e' <- go e
       [| Align $(pure e') |]
-    go (EChoice es) = case es of
-      []       -> fail "QQ: empty choice (should be impossible)"
-      (e:rest) -> do
-        e'    <- go e
-        rest' <- mapM go rest
-        foldM (\acc x -> [| $(pure acc) .||. $(pure x) |]) e' rest'
-    go (ESeq items act) = translateSeqWith ntRef items act
+    go (EChoice es) = do
+      alts <- mapM toAlt es
+      translateAlts ntRef alts
+    go (ESeq items act) = do
+      body <- seqBody items act
+      translateAlt ntRef (Alt items [] body)
+
+    toAlt (ESeq items act) = Alt items [] <$> seqBody items act
+    toAlt e                = pure (Opaque e)
 
 -- | Emit @nt \@"name"@: the environment is searched by the type checker.
 ntByName :: String -> Q Exp
@@ -130,29 +135,120 @@ translateRel RAny         = [| anyR |]
 translateRel (ROffset n)  = [| offsetR n |]
 translateRel (RNamed nm)  = pure (TH.VarE (TH.mkName nm))
 
-translateSeqWith :: (String -> Q Exp) -> [Item] -> Maybe String -> Q Exp
-translateSeqWith ntRef items act = do
+-- | One alternative of an ordered choice, on its way to being translated.
+--
+-- An 'Alt' is the part of a sequence still to be parsed, together with the
+-- patterns for values an enclosing factoring has already parsed on its
+-- behalf, and the semantic action over all of them.  It translates to an
+-- expression returning a function of those earlier values: @\rest... ->
+-- \outer... -> body@.  An alternative that is not a sequence is 'Opaque' and
+-- never shares a prefix with anything.
+data Alt
+  = Alt [Item] [Pat] Exp
+  | Opaque PExpr
+
+-- | Translate an ordered choice, factoring out prefixes that consecutive
+-- alternatives share.
+--
+-- == Why
+--
+-- A PEG does not memoise, so in
+--
+-- @
+-- expr <- e:or_expr ws "if" c:or_expr ws "else" a:expr { ... }
+--       / e:or_expr { e }
+-- @
+--
+-- a plain expression is parsed twice: once by the alternative that fails
+-- at @"if"@ and once by the one that succeeds.  Each precedence level written
+-- this way doubles the work, and levels nest — through parentheses, call
+-- arguments, list elements — so the cost is exponential in how deeply the
+-- /input/ nests.  On the MiniPython grammar @print(str(mdc(f(g(x)))))@ took
+-- a third of a second, eight times as long per level.
+--
+-- == What it does
+--
+-- In a PEG, @A B \/ A C@ and @A (B \/ C)@ accept the same inputs with the
+-- same results: @A@ is deterministic, so the second alternative would parse
+-- exactly what the first one did before it failed.  Consecutive alternatives
+-- whose leading items are the same expression — labels aside — are
+-- translated as their longest common prefix followed by a choice of what is
+-- left of each, which is factored again.  Only /consecutive/ alternatives
+-- are grouped: in @A B \/ X \/ A C@ the @X@ must still be tried between them.
+--
+-- Each remainder returns a function of the prefix's values, so that its
+-- action still sees the prefix under the labels it gave it.
+translateAlts :: (String -> Q Exp) -> [Alt] -> Q Exp
+translateAlts ntRef alts = do
+  es <- mapM (translateGroup ntRef) (groupBy sameHead alts)
+  case es of
+    []       -> fail "QQ: empty choice (should be impossible)"
+    (e:rest) -> foldM (\acc x -> [| $(pure acc) .||. $(pure x) |]) e rest
+  where
+    sameHead (Alt (Item _ a : _) _ _) (Alt (Item _ b : _) _ _) = a == b
+    sameHead _ _                                             = False
+
+translateGroup :: (String -> Q Exp) -> [Alt] -> Q Exp
+translateGroup ntRef [alt] = translateAlt ntRef alt
+translateGroup ntRef grp = do
+  let itemss = [ is | Alt is _ _ <- grp ]
+      k      = commonPrefix itemss
+      prefix = [ e | Item _ e <- take k (headItems itemss) ]
+  xs <- mapM (\i -> TH.newName ("p" ++ show i)) [1 .. k]
+  kf <- TH.newName "rest"
+  let apply = LamE (map VarP xs ++ [VarP kf])
+                   (foldl AppE (VarE kf) (map VarE xs))
+      remainders = [ Alt (drop k is) (map itemPat (take k is) ++ outer) body
+                   | Alt is outer body <- grp ]
+  pes  <- mapM (translateExprWith ntRef) prefix
+  rest <- translateAlts ntRef remainders
+  case pes of
+    []       -> fail "QQ: factoring an empty prefix (should be impossible)"
+    (p:ps)   -> do
+      hd <- [| fmapP $(pure apply) $(pure p) |]
+      foldM (\acc x -> [| $(pure acc) <*>. $(pure x) |]) hd (ps ++ [rest])
+  where
+    headItems (is:_) = is
+    headItems []     = []
+
+    commonPrefix []       = 0
+    commonPrefix (i:iss)  = foldr (min . agree i) (length i) iss
+    agree as bs = length (takeWhile id (zipWith sameItem as bs))
+    sameItem (Item _ a) (Item _ b) = a == b
+
+-- | Translate one alternative that nothing is factored out of.
+translateAlt :: (String -> Q Exp) -> Alt -> Q Exp
+translateAlt ntRef (Opaque e) = translateExprWith ntRef e
+translateAlt ntRef (Alt items outer body) = do
+  es <- mapM (\(Item _ e) -> translateExprWith ntRef e) items
+  case es of
+    []       -> [| pureP $(pure (lambda outer body)) |]
+    (e:rest) -> do
+      hd <- [| fmapP $(pure (LamE (map itemPat items ++ outer) body)) $(pure e) |]
+      foldM (\acc x -> [| $(pure acc) <*>. $(pure x) |]) hd rest
+  where
+    lambda [] b = b
+    lambda ps b = LamE ps b
+
+itemPat :: Item -> Pat
+itemPat (Item (Just l) _) = VarP (TH.mkName l)
+itemPat (Item Nothing _)  = WildP
+
+-- | The value a sequence returns: its semantic action, or its labelled items
+-- when it has none — one of them bare, several as a tuple, none as @()@.
+seqBody :: [Item] -> Maybe String -> Q Exp
+seqBody items act = do
   let labels = [ l | Item (Just l) _ <- items ]
   case duplicates labels of
     (l:_) -> fail ("QQ: the label " ++ show l
                      ++ " is used twice in the same sequence")
     []    -> pure ()
-  body <- case act of
+  case act of
     Nothing  -> pure (defaultBody labels)
     Just src -> case parseHsExp src of
       Right e  -> pure e
       Left err -> fail ("QQ: in the semantic action {" ++ src ++ "}: " ++ err)
-  es <- mapM (\(Item _ e) -> translateExprWith ntRef e) items
-  case es of
-    []       -> [| pureP $(pure body) |]
-    (e:rest) -> do
-      let pats = zipWith itemPat [1 :: Int ..] items
-      hd <- [| fmapP $(pure (LamE pats body)) $(pure e) |]
-      foldM (\acc x -> [| $(pure acc) <*>. $(pure x) |]) hd rest
   where
-    itemPat i (Item ml _) =
-      VarP (TH.mkName (maybe ('_' : show i) id ml))
-
     defaultBody []  = TH.ConE '()
     defaultBody [l] = TH.VarE (TH.mkName l)
     defaultBody ls  = TH.TupE (map (Just . TH.VarE . TH.mkName) ls)
@@ -235,31 +331,14 @@ pegRulesExp src = case parseGrammar src of
 -- | Quasi-quoter for a complete grammar.
 --
 -- Unlike 'pegRules', which is one part of a rule set and can be combined with
--- another, this owns the whole grammar.  Two things follow from that.
---
--- It knows every rule's position in the environment, so it emits
--- 'PEG.Syntax.ntw' and the membership proof rather than @nt@ and a
--- 'PEG.Member.KnownMember' search.  That is worth about 2.6x on the compile
--- time of a 64-rule grammar; see @bench-compile/@.
---
--- And it knows the whole grammar is in front of it, so a reference to a name
--- no rule defines is an error at the splice rather than a type error later.
---
--- == In expression position
---
--- @
--- arith :: Stream s => Grammar s ArithEnv _ Exp
--- arith = [pegGrammar|
---           %start expr
---           expr   \<- t:term ts:(o:[+-] u:term)* { foldl addOp t ts }
---           term   \<- ...
---         |]
--- @
+-- another, this owns the whole grammar, so a reference to a name no rule
+-- defines is an error at the splice rather than a type error later, and left
+-- recursion is looked for across every rule.
 --
 -- == In declaration position
 --
--- Give each rule its result type and the environment need not be written at
--- all — the quasi-quoter declares it, along with the grammar and its
+-- Give each rule its result type and nothing else need be written — the
+-- quasi-quoter declares the grammar's key type, the grammar, and its
 -- signature:
 --
 -- @
@@ -271,10 +350,44 @@ pegRulesExp src = case parseGrammar src of
 -- |]
 -- @
 --
--- declares @type ArithEnv s@, @arith :: Stream s => Grammar s (ArithEnv s) Exp@
--- and @arith@ itself.  An entry of the environment is a rule's name and the
--- type it returns; the type is the one thing the grammar does not determine,
--- which is what the annotations are for.
+-- declares
+--
+-- @
+-- data ArithEnv s a where
+--   ArithEnv_expr :: ArithEnv s Exp
+--   ArithEnv_term :: ArithEnv s Exp
+-- instance 'Tabulate' (ArithEnv s)
+--
+-- arith'expr :: Stream s => PExp s (ArithEnv s) Exp
+-- arith'term :: Stream s => PExp s (ArithEnv s) Exp
+--
+-- arith :: Stream s => Grammar s (ArithEnv s) Exp
+-- @
+--
+-- A reference to @term@ is @'NT' ArithEnv_term@, whose type is checked
+-- without looking at the rest of the grammar, so the cost of type-checking a
+-- grammar grows with its size and no faster.  Each rule is a binding of its
+-- own with the declared type as its signature, so an annotation that
+-- disagrees with the rule's body is reported against that rule.  The module
+-- needs @GADTs@, since the key type is one.
+--
+-- == In expression position
+--
+-- @
+-- arith :: Grammar String _ Exp
+-- arith = [pegGrammar|
+--           %start expr
+--           expr   \<- t:term ts:(o:[+-] u:term)* { foldl addOp t ts }
+--           term   \<- ...
+--         |]
+-- @
+--
+-- An expression cannot declare a type, so there is no key type to generate:
+-- the grammar is built over a type-level environment, as 'pegRules' builds
+-- it, with each reference carrying its membership proof.  That is fine for a
+-- grammar of a few dozen rules and increasingly expensive past that; see
+-- "PEG.Key".  Prefer declaration position, with @%param@ for what the
+-- expression form would have captured from its surroundings.
 --
 -- == Directives
 --
@@ -282,13 +395,16 @@ pegRulesExp src = case parseGrammar src of
 --            PEG expression over the grammar's rules.
 -- [@%name@]  Required in declaration position: the name to bind the grammar
 --            to.
--- [@%env@]   The name of the generated environment synonym.  Defaults to the
---            grammar's name, capitalised, with @Env@ appended.
+-- [@%env@]   The name of the generated key type.  Defaults to the grammar's
+--            name, capitalised, with @Env@ appended.
 -- [@%stream@] The stream type.  Defaults to a variable @s@ with a
 --            'PEG.Stream.Stream' constraint.
 -- [@%result@] The grammar's result type, for the rare start expression whose
 --            type cannot be read off the rules — one with a semantic action
 --            of its own.
+-- [@%param@] @%param name :: Type@, in declaration position: the grammar and
+--            every rule take an argument @name@, in scope in every semantic
+--            action.  May be repeated; the arguments are taken in order.
 pegGrammar :: QuasiQuoter
 pegGrammar = QuasiQuoter
   { quoteExp  = pegGrammarExp
@@ -370,12 +486,15 @@ normaliseStart (ESeq [Item Nothing e] Nothing) = e
 normaliseStart e                               = e
 
 knownDirectives :: [String]
-knownDirectives = ["start", "name", "env", "stream", "result"]
+knownDirectives = ["start", "name", "env", "stream", "result", "param"]
 
 directive :: String -> [Directive] -> Maybe String
-directive k ds = case [ v | Directive k' v <- ds, k' == k ] of
+directive k ds = case directives k ds of
   (v:_) -> Just v
   []    -> Nothing
+
+directives :: String -> [Directive] -> [String]
+directives k ds = [ v | Directive k' v <- ds, k' == k ]
 
 -- | Emit @ntw \@"name" (There (... Here))@: the proof instead of the search.
 ntByWitness :: [String] -> String -> Q Exp
@@ -391,6 +510,9 @@ ntByWitness names name = case elemIndex name names of
 pegGrammarExp :: String -> Q Exp
 pegGrammarExp src = do
   gs <- parseGrammarSrc src
+  unless (null (directives "param" (gsDirs gs))) $
+    fail "pegGrammar: %param is only meaningful in declaration position;\n\
+         \      an expression can use the variables in scope around it"
   let ntRef = ntByWitness (gsNames gs)
   rules <- translateRules ntRef (gsDefs gs)
   start <- translateExprWith ntRef (gsStart gs)
@@ -399,47 +521,179 @@ pegGrammarExp src = do
 pegGrammarDec :: String -> Q [TH.Dec]
 pegGrammarDec src = do
   gs <- parseGrammarSrc src
-  gname <- case directive "name" (gsDirs gs) of
-    Just v  -> pure (TH.mkName v)
+  gadts <- TH.isExtEnabled TH.GADTs
+  unless gadts $
+    fail "pegGrammar: declaring a grammar declares a GADT, its key type;\n\
+         \      enable {-# LANGUAGE GADTs #-} in this module"
+  baseName <- case directive "name" (gsDirs gs) of
+    Just v  -> pure v
     Nothing -> fail "pegGrammar: no %name directive, which declaring a \
                     \grammar needs"
-  let baseName = maybe "" id (directive "name" (gsDirs gs))
-      envName  = TH.mkName (maybe (capitalise baseName ++ "Env") id
-                                  (directive "env" (gsDirs gs)))
+  let gname    = TH.mkName baseName
+      envStr   = maybe (capitalise baseName ++ "Env") id
+                       (directive "env" (gsDirs gs))
+      envName  = TH.mkName envStr
       streamV  = TH.mkName "s"
+      polyStream = directive "stream" (gsDirs gs) == Nothing
   streamT <- case directive "stream" (gsDirs gs) of
     Nothing -> pure (TH.VarT streamV)
     Just t  -> either (\e -> fail ("pegGrammar: in %stream: " ++ e)) pure
                       (parseHsType t)
-  anns <- mapM (resultAnnotation gname) (gsDefs gs)
-  let envRhs = promotedList [ envEntry n ty | (n, ty) <- anns ]
+  params <- mapM parseParam (directives "param" (gsDirs gs))
+  anns0 <- mapM (resultAnnotation gname) (gsDefs gs)
+  -- A result type may mention the stream as @s@.  In the key type @s@ is the
+  -- type's own parameter, so it can stay; in a signature of a grammar over a
+  -- fixed stream it has to become that stream.
+  let atStream = if polyStream then id else substVar streamV streamT
+      anns     = [ (n, atStream t) | (n, t) <- anns0 ]
   startRes <- case directive "result" (gsDirs gs) of
-    Just t  -> either (\e -> fail ("pegGrammar: in %result: " ++ e)) pure
-                      (parseHsType t)
+    Just t  -> either (\e -> fail ("pegGrammar: in %result: " ++ e))
+                      (pure . atStream) (parseHsType t)
     Nothing -> case resultTypeOf streamT anns (gsStart gs) of
       Just t  -> pure t
       Nothing -> fail "pegGrammar: cannot tell what the start expression \
                       \returns.\n  It has a semantic action of its own; state \
                       \its type with %result."
-  let envApplied = TH.AppT (TH.ConT envName) streamT
-      grammarTy  = foldl TH.AppT (TH.ConT ''Grammar)
-                     [streamT, envApplied, startRes]
-      sigTy = case directive "stream" (gsDirs gs) of
-        Just _  -> grammarTy
-        Nothing -> TH.ForallT [TH.PlainTV streamV TH.SpecifiedSpec]
-                              [TH.AppT (TH.ConT ''Stream) (TH.VarT streamV)]
-                              grammarTy
-  body <- pegGrammarExp src
-  pure [ TH.TySynD envName [TH.PlainTV streamV TH.BndrReq] envRhs
-       , TH.SigD gname sigTy
-       , TH.FunD gname [TH.Clause [] (TH.NormalB body) []]
-       ]
+  let keyCon n  = TH.mkName (envStr ++ "_" ++ n)
+      ruleVar n = TH.mkName (baseName ++ "'" ++ n)
+      ntT       = TH.AppT (TH.ConT envName) streamT
+      ntRef n   = pure (TH.AppE (TH.ConE 'NT) (TH.ConE (keyCon n)))
+      -- A rule that does not use a parameter binds it to @_@, so that a
+      -- grammar with a parameter only some actions need compiles cleanly
+      -- under @-Wunused-matches@.
+      usedPats body = [ if mentions p body then TH.VarP p else TH.WildP
+                      | (p, _) <- params ]
+      paramArgs = [ TH.VarE p | (p, _) <- params ]
+      -- @forall s. Stream s => P1 -> ... -> t@, or @P1 -> ... -> t@ over a
+      -- fixed stream.
+      signature t =
+        let body = foldr (\(_, pt) r -> TH.AppT (TH.AppT TH.ArrowT pt) r)
+                         t params
+        in if polyStream
+             then TH.ForallT [TH.PlainTV streamV TH.SpecifiedSpec]
+                             [TH.AppT (TH.ConT ''Stream) (TH.VarT streamV)]
+                             body
+             else body
+      names = gsNames gs
+
+  -- The key type: one constructor per rule, indexed by the rule's result.
+  resV <- TH.newName "a"
+  let keyDecl = TH.DataD [] envName
+        [ requiredTV streamV
+        , requiredKindedTV resV TH.StarT ]
+        Nothing
+        [ TH.GadtC [keyCon n] []
+            (TH.AppT (TH.AppT (TH.ConT envName) (TH.VarT streamV)) ty)
+        | (n, ty) <- anns0 ]
+        []
+
+  -- Its 'Tabulate' instance.  Every rule's image is bound once, outside the
+  -- lookup, which is what makes the table a memo table.
+  fV <- TH.newName "f"
+  kV <- TH.newName "k"
+  xs <- mapM (\n -> TH.newName ("x_" ++ n)) names
+  let onKey arms = TH.LamE [TH.VarP kV] (caseOrAbsurd (TH.VarE kV) arms)
+      caseOrAbsurd scrut [] =
+        -- A grammar with no rules has an uninhabited key type.
+        TH.AppE (TH.AppE (TH.VarE 'seq) scrut)
+                (TH.AppE (TH.VarE 'error)
+                         (TH.LitE (TH.StringL "PEG: no rules")))
+      caseOrAbsurd scrut arms = TH.CaseE scrut arms
+      arm n e = TH.Match (TH.ConP (keyCon n) [] []) (TH.NormalB e) []
+      tabulateD = TH.FunD 'tabulate
+        [ TH.Clause [TH.VarP fV]
+            (TH.NormalB
+               (letOrBody
+                  [ TH.ValD (TH.VarP x)
+                            (TH.NormalB (TH.AppE (TH.VarE fV)
+                                                 (TH.ConE (keyCon n))))
+                            []
+                  | (n, x) <- zip names xs ]
+                  (TH.AppE (TH.ConE 'Table)
+                           (onKey [ arm n (TH.VarE x)
+                                  | (n, x) <- zip names xs ]))))
+            [] ]
+      letOrBody [] e = e
+      letOrBody ds e = TH.LetE ds e
+      ruleNameD = TH.FunD 'ruleName
+        [ TH.Clause [TH.VarP kV]
+            (TH.NormalB (caseOrAbsurd (TH.VarE kV)
+                           [ arm n (TH.LitE (TH.StringL n)) | n <- names ]))
+            [] ]
+      instDecl = TH.InstanceD Nothing []
+        (TH.AppT (TH.ConT ''Tabulate)
+                 (TH.AppT (TH.ConT envName) (TH.VarT streamV)))
+        [tabulateD, ruleNameD]
+
+  -- One binding per rule, with the declared type as its signature.
+  ruleDecls <- fmap concat $ mapM
+    (\(Def n _ e, (_, ty)) -> do
+        body <- translateExprWith ntRef e
+        pure [ TH.SigD (ruleVar n)
+                 (signature (foldl TH.AppT (TH.ConT ''PExp) [streamT, ntT, ty]))
+             , TH.FunD (ruleVar n)
+                 [TH.Clause (usedPats body) (TH.NormalB body) []]
+             ])
+    (zip (gsDefs gs) anns)
+
+  -- The grammar: the rules as a function of their keys, and the start.
+  start <- translateExprWith ntRef (gsStart gs)
+  let rulesE = onKey [ arm n (foldl TH.AppE (TH.VarE (ruleVar n)) paramArgs)
+                     | n <- names ]
+      grammarTy = foldl TH.AppT (TH.ConT ''Grammar) [streamT, ntT, startRes]
+  pure $ [ keyDecl, instDecl ] ++ ruleDecls ++
+    [ TH.SigD gname (signature grammarTy)
+    , TH.FunD gname
+        [ TH.Clause (usedPats (TH.AppE rulesE start))
+            (TH.NormalB (TH.AppE (TH.AppE (TH.ConE 'Keyed) rulesE) start)) [] ]
+    ]
   where
     capitalise []     = []
     capitalise (c:cs) = toUpper c : cs
     toUpper c = if c >= 'a' && c <= 'z' then toEnum (fromEnum c - 32) else c
 
--- | A rule's declared result type, which declaring an environment needs.
+-- | @%param name :: Type@.
+parseParam :: String -> Q (TH.Name, TH.Type)
+parseParam src = case breakOnSig src of
+  Just (nm, ty)
+    | validName nm -> either (\e -> fail ("pegGrammar: in %param " ++ nm
+                                            ++ ": " ++ e))
+                             (\t -> pure (TH.mkName nm, t))
+                             (parseHsType ty)
+  _ -> fail ("pegGrammar: expected %param name :: Type, found %param " ++ src)
+  where
+    breakOnSig = go []
+      where
+        go acc (':':':':rest) = Just (trim (reverse acc), rest)
+        go acc (c:cs)         = go (c:acc) cs
+        go _   []             = Nothing
+    trim = reverse . dropWhile (== ' ') . reverse . dropWhile (== ' ')
+    validName (c:cs) = (c == '_' || (c >= 'a' && c <= 'z'))
+                       && all (\x -> x == '_' || x == '\'' || (x >= 'a' && x <= 'z')
+                                     || (x >= 'A' && x <= 'Z')
+                                     || (x >= '0' && x <= '9')) cs
+    validName []     = False
+
+-- | Does the name occur anywhere in the expression?  Conservative: a
+-- binding of the same name inside counts as an occurrence.
+mentions :: Data a => TH.Name -> a -> Bool
+mentions n x = case cast x of
+  Just n' -> n' == n
+  Nothing -> or (gmapQ (mentions n) x)
+
+-- | Replace a type variable.
+substVar :: TH.Name -> TH.Type -> TH.Type -> TH.Type
+substVar v new = go
+  where
+    go (TH.VarT n) | n == v    = new
+    go (TH.AppT a b)           = TH.AppT (go a) (go b)
+    go (TH.AppKindT t k)       = TH.AppKindT (go t) k
+    go (TH.SigT t k)           = TH.SigT (go t) k
+    go (TH.InfixT a n b)       = TH.InfixT (go a) n (go b)
+    go (TH.ParensT t)          = TH.ParensT (go t)
+    go t                       = t
+
+-- | A rule's declared result type, which declaring the key type needs.
 resultAnnotation :: TH.Name -> Def -> Q (String, TH.Type)
 resultAnnotation gname (Def n ann _) = case ann of
   Nothing  -> fail ("pegGrammar: the rule " ++ n ++ " has no result type.\n\
@@ -453,7 +707,7 @@ resultAnnotation gname (Def n ann _) = case ann of
 
 -- | What the start expression returns, read off the rules' declared types.
 --
--- This follows @translateSeqWith@: a sequence with no semantic action returns
+-- This follows @seqBody@: a sequence with no semantic action returns
 -- its labelled items, one of them bare and several as a tuple.  A sequence
 -- /with/ an action returns whatever the action does, which is Haskell and so
 -- not knowable here — hence the 'Maybe', and the @%result@ directive.
@@ -486,16 +740,3 @@ resultTypeOf streamT anns = go
     firstJust xs = case [ x | Just x <- xs ] of
       (x:_) -> Just x
       []    -> Nothing
-
---------------------------------------------------------------------------------
--- Building the environment's type
---------------------------------------------------------------------------------
-
-promotedList :: [TH.Type] -> TH.Type
-promotedList = foldr (\x acc -> TH.AppT (TH.AppT TH.PromotedConsT x) acc)
-                     TH.PromotedNilT
-
-envEntry :: String -> TH.Type -> TH.Type
-envEntry n res =
-  TH.AppT (TH.AppT (TH.PromotedTupleT 2) (TH.LitT (TH.StrTyLit n)))
-          (TH.AppT (TH.PromotedT 'EnvEntry) res)
