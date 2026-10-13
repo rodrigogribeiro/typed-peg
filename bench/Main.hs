@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -O2 #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | criterion driver comparing typed-peg against megaparsec.

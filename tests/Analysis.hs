@@ -137,6 +137,7 @@ specNullable defs = fix [ (n, False) | Def n _ _ <- defs ]
       where
         go (EChar _)      = False
         go EDot           = False
+        go EOffset        = True
         go (EClass _ _)   = False
         go (EString s)    = null s
         go (ENT n)        = maybe False id (lookup n m)
@@ -164,6 +165,7 @@ specHeads nulls = go
 
     go (EChar _)     = []
     go EDot          = []
+    go EOffset       = []
     go (EClass _ _)  = []
     go (EString _)   = []
     go (ENT n)       = [n]
@@ -188,6 +190,7 @@ specNullableOf nulls = go
   where
     go (EChar _)     = False
     go EDot          = False
+    go EOffset       = True
     go (EClass _ _)  = False
     go (EString s)   = null s
     go (ENT n)       = maybe False id (lookup n nulls)
@@ -318,7 +321,8 @@ grammarFrom seed0 = snd (L.foldl' rule (seed0, []) [0 .. n - 1])
     expr seed depth =
       let (k, seed') = next seed
       in case (if depth <= (0 :: Int) then k `mod` 3 else k `mod` 9) of
-           0 -> (EChar 'x', seed')
+           0 | even (k `div` 9) -> (EChar 'x', seed')
+             | otherwise        -> (EOffset, seed')
            1 -> (EClass False [('a', 'z')], seed')
            2 -> (ENT (names !! (k `mod` n)), seed')
            3 -> let (e, s') = expr seed' (depth - 1) in (EOpt e, s')
@@ -356,6 +360,18 @@ standaloneChecks =
       case run "a <- xs:b*\nb <- c:'x'?" of
         Left [NullableStar "a"] -> True
         _                       -> False)
+  , ("a repetition of @ is reported: it consumes nothing",
+      case run "a <- ps:@*" of
+        Left [NullableStar "a"] -> True
+        _                       -> False)
+  , ("@ does not hide left recursion behind it",
+      case run "a <- p:@ x:a 'x' / 'y'" of
+        Left [LeftRecursive "a" _] -> True
+        _                          -> False)
+  , ("@ is parsed as an item that consumes nothing",
+      case run "a <- p:@ 'x' q:@" of
+        Right env -> lookup "a" env == Just (Ty False [])
+        _         -> False)
   , ("an undefined non-terminal is reported",
       case run "a <- x:missing" of
         Left [UndefinedNT "missing" ["a"]] -> True

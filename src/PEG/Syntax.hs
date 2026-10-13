@@ -66,6 +66,7 @@ module PEG.Syntax
   , indent
   , position
   , align
+  , getOffset
   , (<$>.)
   , (<*>.)
   , (.>>.)
@@ -110,6 +111,7 @@ data Name (n :: Symbol) = Name
 -- * 'Indent' — require the next token to satisfy an indentation relation
 -- * 'Position'— set the column relation for tokens inside the sub-expression
 -- * 'Align'  — require the next token to be aligned with the current position
+-- * 'GetOffset' — consume nothing, return the offset of the current position
 data PExp (s :: Type) (nt :: Type -> Type) (a :: Type) where
   Pure     :: a -> PExp s nt a
   Term     :: Char -> PExp s nt Char
@@ -157,6 +159,11 @@ data PExp (s :: Type) (nt :: Type -> Type) (a :: Type) where
            -> PExp s nt a
   Align    :: PExp s nt a
            -> PExp s nt a
+  -- | Consume nothing and return how many characters of the input have been
+  -- consumed so far: the offset of the next character.  This is how a
+  -- semantic action learns where a node starts or ends; "PEG.Location" turns
+  -- an offset into a line and a column.  Written @\@@ in the quasi-quoter.
+  GetOffset :: PExp s nt Int
 
 instance Functor (PExp s nt) where
   fmap = Map
@@ -213,6 +220,11 @@ position = Position
 -- | Require the sub-expression to start at the current alignment column.
 align :: PExp s nt a -> PExp s nt a
 align = Align
+
+-- | The offset of the current position: the number of characters consumed
+-- so far.  Consumes nothing and never fails.
+getOffset :: PExp s nt Int
+getOffset = GetOffset
 
 -- | Infix synonym for 'fmapP'.
 (<$>.) :: (a -> b) -> PExp s nt a -> PExp s nt b

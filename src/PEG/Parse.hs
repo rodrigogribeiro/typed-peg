@@ -287,6 +287,9 @@ compileE tw resolve = comp
 
     comp (Str lit) = litStep lit
 
+    -- Consumes nothing: the offset is already in the state.
+    comp GetOffset = \_ st -> (# | (# stOff st, st #) #)
+
     -- A run of a character class, returned as a chunk of the stream.  On
     -- 'Data.Text.Text' this is a slice: no copy, no cons cells.
     comp (Span  cs) = spanChunk (\c -> memberCS c cs) (simpleCS cs) False

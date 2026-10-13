@@ -38,6 +38,7 @@ module PEG
   , module PEG.Syntax
   , module PEG.Grammar
   , module PEG.Parse
+  , module PEG.Location
   ) where
 
 import PEG.CharSet
@@ -45,6 +46,7 @@ import PEG.Grammar
 import PEG.Stream
 import PEG.Indent
 import PEG.Key
+import PEG.Location
 import PEG.Member
 import PEG.Parse
 import PEG.Syntax

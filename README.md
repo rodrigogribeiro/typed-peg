@@ -15,8 +15,32 @@ grammar type-checks in about a second.
   non-terminal and a duplicate rule reported at the splice, naming the rule
 - Indentation-sensitive parsing (`PEG.Indent`)
 - Quasi-quoter for concrete grammar syntax (`PEG.QQ`)
+- Source positions in semantic actions (`@`, `PEG.Location`)
 - Parses any `PEG.Stream`: `String`, strict/lazy `Text`, strict/lazy
   `ByteString`
+
+## Source positions
+
+`@` consumes nothing and returns the current offset, the number of characters
+consumed so far.  Label it to give an action the position of what follows,
+and turn offsets into lines and columns with `PEG.Location`:
+
+```haskell
+[pegGrammar|
+  %name   lang
+  %stream String
+  %param  idx :: LineIndex
+  %start  stmt
+
+  stmt :: Stmt <- p:@ v:name ":=" ws e:expr   { Assign (lineCol idx p) v e }
+  ...
+|]
+
+parse (lang (lineIndex src)) src
+```
+
+Lines and columns count from 1.  The parser tracks only the offset, so a
+grammar that does not use `@` pays nothing for it.
 
 ## Input streams
 

@@ -158,6 +158,7 @@ exprTy look = go
   where
     go (EChar _)        = termTy
     go EDot             = termTy
+    go EOffset          = nullTy          -- GetOffset consumes nothing
     go (EClass _ _)     = termTy
     go (EString s)
       | null s          = nullTy          -- pureP ""

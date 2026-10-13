@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE GADTs                 #-}
 {-# LANGUAGE QuasiQuotes           #-}
 {-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE TypeOperators         #-}
@@ -17,11 +18,14 @@ module Patterns
   , addOp
   , kwG
   , prog
+  , Loc (..), Stmt (..), LExpr (..)
+  , located
+  , undefinedVars
   , patternsMain
   ) where
 
 import PEG
-import PEG.QQ (pegExpr, pegRules)
+import PEG.QQ (pegExpr, pegGrammar, pegRules)
 
 --------------------------------------------------------------------------------
 -- Pattern 2a/2bi: whitespace and token combinators, at the PExp level
@@ -176,6 +180,69 @@ addOp :: Stream s => Grammar s (InEnv OpEnv) (Expr -> Expr -> Expr)
 addOp = Grammar [pegRules| op <- '+' { Add } / '-' { Sub } |] (nt @"op")
 
 --------------------------------------------------------------------------------
+-- Pattern 3b, continued: source positions
+--
+-- @\@@ consumes nothing and returns the offset of the current position.  A
+-- label on it hands that offset to the action, and the 'LineIndex' passed in
+-- as a parameter turns it into a line and a column.
+--------------------------------------------------------------------------------
+
+-- | A line and a column, both from 1.
+data Loc = Loc Int Int
+  deriving Eq
+
+instance Show Loc where
+  show (Loc l c) = show l ++ ":" ++ show c
+
+data Stmt
+  = Assign Loc Loc String LExpr   -- ^ where the statement starts and ends
+  | Print  Loc LExpr
+  deriving (Eq, Show)
+
+data LExpr
+  = LNum Loc Int
+  | LVar Loc String
+  | LAdd LExpr LExpr
+  deriving (Eq, Show)
+
+-- | The lifted constructor of §3.1, for positions: an offset becomes a 'Loc'
+-- here, not in the action.
+at :: LineIndex -> Int -> Loc
+at idx = uncurry Loc . lineCol idx
+
+-- | Each @p:\@@ sits /before/ the token it locates and after the whitespace
+-- the previous token consumed (§2.1), so it is the token's first character.
+-- An @\@@ after the last token of a statement gives where it ends.
+[pegGrammar|
+  %name   located
+  %stream String
+  %param  idx :: LineIndex
+  %start  prog
+
+  prog :: [Stmt] <- ws ss:stmt* !.                         { ss }
+  stmt :: Stmt   <- p:@ "print" ![a-z] ws e:expr ';' ws    { Print (at idx p) e }
+                 /  p:@ v:name ":=" ws e:expr ';' r:@ ws
+                                       { Assign (at idx p) (at idx r) v e }
+  expr :: LExpr  <- t:atom ts:('+' ws u:atom)*             { foldl LAdd t ts }
+  atom :: LExpr  <- p:@ ds:[0-9]+ ws                       { LNum (at idx p) (read ds) }
+                 /  p:@ v:name                             { LVar (at idx p) v }
+  name :: String <- cs:[a-z]+ ws                           { cs }
+  ws   :: ()     <- [ \t\n]*                               { () }
+|]
+
+-- | Every use of a variable before it is assigned, reported where it occurs.
+undefinedVars :: [Stmt] -> [String]
+undefinedVars = go []
+  where
+    go _ [] = []
+    go env (Assign _ _ v e : ss) = uses env e ++ go (v : env) ss
+    go env (Print _ e      : ss) = uses env e ++ go env ss
+
+    uses env (LVar l v) | v `notElem` env = [show l ++ ": " ++ v ++ " is not defined"]
+    uses env (LAdd a b) = uses env a ++ uses env b
+    uses _   _          = []
+
+--------------------------------------------------------------------------------
 -- Statements, to show ordered choice and the lexeme discipline
 --------------------------------------------------------------------------------
 
@@ -249,6 +316,13 @@ patternsMain = do
             OK f _ _ -> show (f (Num 1) (Num 2))
             Fail     -> "Fail"))
     [ "+", "-", "*" ]
+
+  putStrLn "### source positions"
+  let src = "x := 1;\nprint x + y;\n  y := x+\n    2;\nprint z;\n"
+  case parse (located (lineIndex src)) src of
+    OK ss _ _ -> do mapM_ print ss
+                    mapM_ putStrLn (undefinedVars ss)
+    Fail      -> putStrLn "Fail"
 
   putStrLn "### lexeme discipline: fully (lexeme p)"
   let toks = parse (Grammar RNil (fully (lexeme [pegExpr| ds:[0-9]+ |])))

@@ -48,6 +48,7 @@ data PExpr
   | EString  String
   | EClass   Bool [(Char,Char)]   -- ^ 'True' when the class is negated.
   | EDot
+  | EOffset                       -- ^ @\@@: the current offset; consumes nothing.
   | ENT      String
   | EIndent  RelS PExpr
   | EPos     RelS PExpr
@@ -303,7 +304,9 @@ parsePrimary s =
      Right r -> Right r
      Left _ -> case tok "." s of
       Right (_, s1) -> Right (EDot, s1)
-      Left _ -> case charLit s of
+      Left _ -> case tok "@" s of
+       Right (_, s1) -> Right (EOffset, s1)
+       Left _ -> case charLit s of
         Right (c, s1) -> Right (EChar c, s1)
         Left _ -> case strLit s of
           Right (cs, s1) -> Right (EString cs, s1)

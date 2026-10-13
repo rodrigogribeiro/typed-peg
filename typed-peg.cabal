@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               typed-peg
-version:            0.4.0.0
+version:            0.5.0.0
 synopsis:           Type-safe PEG parser combinators
 description:
   A library for building Parsing Expression Grammars parsers
@@ -67,6 +67,7 @@ library
     PEG.Grammar
     PEG.Indent
     PEG.Key
+    PEG.Location
     PEG.Member
     PEG.Parse
     PEG.QQ
@@ -117,7 +118,9 @@ benchmark typed-peg-bench
     Bench.Inputs
     Bench.Peg
     Bench.Mega
-  ghc-options:     -O2 -rtsopts "-with-rtsopts=-T"
+  -- -O2 is set per module, with OPTIONS_GHC: `cabal check` warns about it in
+  -- ghc-options, even for a benchmark no user builds.
+  ghc-options:     -rtsopts "-with-rtsopts=-T"
   build-depends:
       base
     , typed-peg

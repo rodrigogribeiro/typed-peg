@@ -16,6 +16,11 @@
 -- Ordered choice is written with @\/@; Kleene star with @*@; plus with @+@;
 -- optional with @?@; negation with @!@.
 --
+-- @\@@ consumes nothing and returns the current offset, an 'Int': label it to
+-- give a semantic action the position of what follows, as in
+-- @p:\@ k:"while" c:expr { While p c }@.  "PEG.Location" turns an offset
+-- into a line and a column.
+--
 -- Character classes use @[...]@ syntax and may contain ranges: @[a-zA-Z0-9_]@.
 -- A leading @^@ negates the class, so @[^\"]@ matches any character other than
 -- a double quote; write @[\\^]@ for a class containing a caret.  Prefer a
@@ -63,6 +68,8 @@ translateExprWith ntRef = go
       [| Term c |]
     go EDot =
       [| AnyChar |]
+    go EOffset =
+      [| GetOffset |]
     go (ENT name) = ntRef name
     go (EString str)
       | null str  = [| pureP "" |]
@@ -717,6 +724,7 @@ resultTypeOf streamT anns = go
     go (ENT n)       = lookup n anns
     go (EChar _)     = Just (TH.ConT ''Char)
     go EDot          = Just (TH.ConT ''Char)
+    go EOffset       = Just (TH.ConT ''Int)
     go (EClass _ _)  = Just (TH.ConT ''Char)
     go (EString _)   = Just (TH.ConT ''String)
     go (EAnd _)      = Just (TH.TupleT 0)

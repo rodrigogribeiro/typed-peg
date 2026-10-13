@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -O2 #-}
 -- | Deterministic input generators shared by the typed-peg and megaparsec
 -- benchmark groups.  Everything is pure and reproducible (a small LCG), so
 -- both libraries are always measured on byte-identical inputs.
