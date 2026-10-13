@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Source positions in semantic actions: `@` and `PEG.Location`
+
+A new `PExp` constructor, `GetOffset :: PExp s nt Int` (`getOffset`), consumes
+nothing and returns the number of characters consumed so far.  The
+quasi-quoter writes it `@`; labelled, it hands an action the position of
+whatever follows:
+
+```
+stmt :: Stmt <- p:@ "print" ws e:expr ';' { Print (at idx p) e }
+```
+
+The parser still tracks only the offset, so a grammar that does not use `@`
+runs exactly as before.  The new module `PEG.Location` (re-exported by `PEG`)
+turns offsets into lines and columns against the original input: `lineIndex`
+indexes an input once, `lineCol` looks an offset up in O(log lines), and
+`offsetToLineCol` does both for a single lookup.  Pass the index to the
+grammar with `%param`.  `peg-patterns.md` §3.2 has a worked example.
+
 ### Breaking. A non-terminal is a key, and `pegGrammar` declares the key type
 
 `PExp` and `Grammar` are indexed by the type of the grammar's non-terminal
