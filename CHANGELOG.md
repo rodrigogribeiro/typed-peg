@@ -43,6 +43,13 @@ the benchmarks is unchanged (identical on most rows, +0.4% on `json`).
 `Step` and `Res` take the tracker as a parameter, and `compileGrammar` a
 `Tracker` constraint.
 
+Time per parse against 0.5, pinned to one core, the three versions
+interleaved per grammar (megaparsec, unchanged, varied by -4% to +6% between
+runs, which is the noise): within that noise on `arith`, `csv`, `idents`,
+`json` and `quoted-class`; +1% to +7% on `nested`, matching its extra
+allocation; and 4% to 15% *faster* on `quoted-lookahead`, and on ByteString
+generally, from the strict character in the ByteString instances.
+
 Making the compiler generic over the tracker exposed an optimiser hazard: GHC
 eta-expanded the function that compiles a node, and then compiled the grammar
 again on every step it ran.  Each node is now returned boxed from a
