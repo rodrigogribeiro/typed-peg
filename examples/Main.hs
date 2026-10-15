@@ -1,6 +1,6 @@
 module Main where
 
-import PEG (parse, parseWith, Result(..))
+import PEG (parse, parseWith, Result(..), ParseError(..))
 import Arith (arith, evalExp)
 import Layout (doExp, layoutOpts)
 import Compat (compatMain)
@@ -9,7 +9,7 @@ import MiniPython (miniPythonMain)
 
 showResult :: Show a => Result String a -> String
 showResult (OK a _ _) = "OK " ++ show a
-showResult Fail        = "Fail"
+showResult (Fail e)    = "Fail at " ++ show (errLine e) ++ ":" ++ show (errColumn e)
 
 main :: IO ()
 main = do
@@ -17,7 +17,7 @@ main = do
   let testArith s =
         let r = case parse arith s of
                   OK e _ _ -> "OK " ++ show (evalExp e)
-                  Fail      -> "Fail"
+                  Fail _    -> "Fail"
         in putStrLn $ s ++ " => " ++ r
   testArith "1+2*3"
   testArith "(1+2)*3"

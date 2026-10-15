@@ -315,18 +315,19 @@ binOps = foldl (\l (o, r) -> EBinOp o l r)
 mpyOpts :: Opts
 mpyOpts = defaultOpts { optTokenMode = relD geR }
 
-parseMiniPython :: String -> Maybe Program
+parseMiniPython :: String -> Either ParseError Program
 parseMiniPython src = case parseWith mpyOpts miniPython src of
-  OK p _ _ -> Just p
-  Fail     -> Nothing
+  OK p _ _ -> Right p
+  Fail e   -> Left e
 
 miniPythonMain :: IO ()
 miniPythonMain = mapM_ run samples
   where
     run (label, src) = putStrLn $ label ++ " => " ++ case parseMiniPython src of
-      Just (Program ss) -> "OK, " ++ show (length ss) ++ " statement(s): "
+      Right (Program ss) -> "OK, " ++ show (length ss) ++ " statement(s): "
                              ++ take 100 (show ss)
-      Nothing           -> "Fail"
+      Left e             -> "Fail at " ++ show (errLine e) ++ ":"
+                              ++ show (errColumn e)
 
     samples =
       [ ("assign", "x: int = 1 + 2 * 3\n")

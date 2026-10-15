@@ -240,37 +240,37 @@ quotedCls =
 runArith :: Stream s => (s -> Result s Exp) -> s -> Int
 runArith p s = case p s of
   OK e _ _ -> evalExp e
-  Fail     -> error "runArith: parse failed"
+  Fail _     -> error "runArith: parse failed"
 {-# INLINE runArith #-}
 
 runCsv :: Stream s => (s -> Result s [[Int]]) -> s -> Int
 runCsv p s = case p s of
   OK rs _ _ -> sum (map sum rs)
-  Fail      -> error "runCsv: parse failed"
+  Fail _      -> error "runCsv: parse failed"
 {-# INLINE runCsv #-}
 
 runIdents :: Stream s => (s -> Result s [s]) -> s -> Int
 runIdents p s = case p s of
   OK is _ _ -> sum (map lengthS is)
-  Fail      -> error "runIdents: parse failed"
+  Fail _      -> error "runIdents: parse failed"
 {-# INLINE runIdents #-}
 
 runJson :: Stream s => (s -> Result s JValue) -> s -> Int
 runJson p s = case p s of
   OK v _ _ -> sizeJ v
-  Fail     -> error "runJson: parse failed"
+  Fail _     -> error "runJson: parse failed"
 {-# INLINE runJson #-}
 
 runQuotedNot :: Stream s => (s -> Result s [String]) -> s -> Int
 runQuotedNot p s = case p s of
   OK xs _ _ -> sum (map length xs)
-  Fail      -> error "runQuotedNot: parse failed"
+  Fail _      -> error "runQuotedNot: parse failed"
 {-# INLINE runQuotedNot #-}
 
 runQuotedCls :: Stream s => (s -> Result s [s]) -> s -> Int
 runQuotedCls p s = case p s of
   OK xs _ _ -> sum (map lengthS xs)
-  Fail      -> error "runQuotedCls: parse failed"
+  Fail _      -> error "runQuotedCls: parse failed"
 {-# INLINE runQuotedCls #-}
 
 sizeJ :: JValue -> Int

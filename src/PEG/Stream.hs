@@ -215,8 +215,10 @@ w2c = chr
 {-# INLINE w2c #-}
 
 instance Stream B.ByteString where
+  -- The character is forced here: a predicate the parser calls on it may not
+  -- be strict, and a lazy one would be a thunk per byte.
   unconsS b = case B.uncons b of
-    Just (w, b') -> (# | (# w2c (fromIntegral w), b' #) #)
+    Just (w, b') -> let !c = w2c (fromIntegral w) in (# | (# c, b' #) #)
     Nothing      -> (# (# #) | #)
   {-# INLINE unconsS #-}
 
@@ -237,8 +239,10 @@ instance Stream B.ByteString where
   {-# INLINE nullS #-}
 
 instance Stream BL.ByteString where
+  -- The character is forced here: a predicate the parser calls on it may not
+  -- be strict, and a lazy one would be a thunk per byte.
   unconsS b = case BL.uncons b of
-    Just (w, b') -> (# | (# w2c (fromIntegral w), b' #) #)
+    Just (w, b') -> let !c = w2c (fromIntegral w) in (# | (# c, b' #) #)
     Nothing      -> (# (# #) | #)
   {-# INLINE unconsS #-}
 

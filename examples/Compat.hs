@@ -33,7 +33,11 @@ import Layout (DoStmt, doExp, layoutOpts)
 
 showR :: (Show s, Show a) => Result s a -> String
 showR (OK a c r) = "OK " ++ show a ++ " consumed=" ++ show c ++ " rest=" ++ show r
-showR Fail       = "Fail"
+showR (Fail e)   = "Fail " ++ showErr e
+
+-- | Where a parse failed, as @line:column@.
+showErr :: ParseError -> String
+showErr e = show (errLine e) ++ ":" ++ show (errColumn e)
 
 arithCases :: [String]
 arithCases =

@@ -56,8 +56,21 @@ lineCol (LineIndex m) off = case IM.lookupLE off m of
   Just (start, ln) -> (ln, off - start + 1)
   Nothing          -> (1, off + 1)   -- a negative offset; not produced by 'parse'
 
--- | @'lineCol' . 'lineIndex'@, for a single lookup.  Indexing costs a pass
--- over the input, so build a 'LineIndex' once when there are many offsets to
--- convert.
+-- | @'lineCol' . 'lineIndex'@, for a single lookup.
+--
+-- It does not build the index: it walks the input up to the offset and no
+-- further, which is what 'PEG.Parse.parseWith' uses to place a
+-- 'PEG.Parse.ParseError'.  Each call is still a pass over that prefix, so
+-- build a 'LineIndex' once when there are many offsets to convert.
 offsetToLineCol :: Stream s => s -> Int -> (Int, Int)
-offsetToLineCol s = lineCol (lineIndex s)
+offsetToLineCol s off
+  | off < 0   = (1, off + 1)              -- as 'lineCol' places it
+  | otherwise = finish (foldlS' step (LC 1 1) (takeS off s))
+  where
+    step (LC ln col) c
+      | c == '\n' = LC (ln + 1) 1
+      | otherwise = LC ln (col + 1)
+    finish (LC ln col) = (ln, col)
+
+-- | A line and a column, strict in both, for the fold above.
+data LC = LC !Int !Int

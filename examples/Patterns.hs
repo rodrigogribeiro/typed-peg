@@ -243,6 +243,36 @@ undefinedVars = go []
     uses _   _          = []
 
 --------------------------------------------------------------------------------
+-- §4: errors.  A failed parse is reported at the furthest point it reached;
+-- an error production turns a failure into a node, so that the parse goes on
+-- and every error is reported, each with a message of its own.
+--------------------------------------------------------------------------------
+
+-- | 'located', with an alternative that catches a statement it cannot parse.
+-- The catch-all comes last and consumes up to the next @;@, which is where
+-- parsing resumes.
+[pegGrammar|
+  %name   recovering
+  %stream String
+  %param  idx :: LineIndex
+  %start  prog
+
+  prog :: [Either String Stmt] <- ws ss:stmt* !.          { ss }
+  stmt :: Either String Stmt
+       <- p:@ v:name ":=" ws res:(e:expr ';' r:@ ws { Right (e, r) }
+                                 / q:@ skip         { Left q })
+            { either (\q -> Left (show (at idx q) ++ ": expected an expression"))
+                     (\(e, r) -> Right (Assign (at idx p) (at idx r) v e)) res }
+        / q:@ skip                     { Left (show (at idx q) ++ ": expected a statement") }
+  skip :: ()     <- [^;]* ';' ws                           { () }
+  expr :: LExpr  <- t:atom ts:('+' ws u:atom)*             { foldl LAdd t ts }
+  atom :: LExpr  <- p:@ ds:[0-9]+ ws                       { LNum (at idx p) (read ds) }
+                 /  p:@ v:name                             { LVar (at idx p) v }
+  name :: String <- cs:[a-z]+ ws                           { cs }
+  ws   :: ()     <- [ \t\n]*                               { () }
+|]
+
+--------------------------------------------------------------------------------
 -- Statements, to show ordered choice and the lexeme discipline
 --------------------------------------------------------------------------------
 
@@ -284,7 +314,11 @@ prog =
 
 showR :: Show a => Result String a -> String
 showR (OK a _ r) = "OK " ++ show a ++ (if null r then "" else " rest=" ++ show r)
-showR Fail       = "Fail"
+showR (Fail e)   = "Fail " ++ showErr e
+
+-- | Where a parse failed, as @line:column@.
+showErr :: ParseError -> String
+showErr e = show (errLine e) ++ ":" ++ show (errColumn e)
 
 patternsMain :: IO ()
 patternsMain = do
@@ -314,7 +348,7 @@ patternsMain = do
   mapM_ (\s -> putStrLn (show s ++ " => " ++
           case parse addOp s of
             OK f _ _ -> show (f (Num 1) (Num 2))
-            Fail     -> "Fail"))
+            Fail e   -> "Fail " ++ showErr e))
     [ "+", "-", "*" ]
 
   putStrLn "### source positions"
@@ -322,7 +356,14 @@ patternsMain = do
   case parse (located (lineIndex src)) src of
     OK ss _ _ -> do mapM_ print ss
                     mapM_ putStrLn (undefinedVars ss)
-    Fail      -> putStrLn "Fail"
+    Fail e    -> putStrLn ("Fail " ++ showErr e)
+
+  putStrLn "### syntax errors"
+  let bad = "x := 1;\ny := 2 + ;\n42;\nz := y;\n"
+  putStrLn (showR (parse (located (lineIndex bad)) bad))
+  case parse (recovering (lineIndex bad)) bad of
+    OK rs _ _ -> mapM_ (putStrLn . either id show) rs
+    Fail e    -> putStrLn ("Fail " ++ showErr e)
 
   putStrLn "### lexeme discipline: fully (lexeme p)"
   let toks = parse (Grammar RNil (fully (lexeme [pegExpr| ds:[0-9]+ |])))
@@ -331,4 +372,4 @@ patternsMain = do
     [ "12", "  12  ", "12 x", "" ]
   where
     fmap' f (OK a _ _) = Just (f a)
-    fmap' _ Fail       = Nothing
+    fmap' _ (Fail _)   = Nothing

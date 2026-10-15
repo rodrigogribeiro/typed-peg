@@ -483,11 +483,11 @@ generatedChecks =
   , ("a generated grammar parses",
       case parse tiny "12,345" of
         OK r _ rest -> r == (2, 3) && rest == ""
-        Fail        -> False)
+        Fail _        -> False)
   , ("%param and %stream: a result type of s becomes the stream",
       case parse (scaled 10) "123" of
         OK r _ rest -> r == 30 && rest == ""
-        Fail        -> False)
+        Fail _        -> False)
   ]
   where
     table :: Table (TinyEnv String) (Const String)
@@ -542,12 +542,12 @@ factoringChecks =
                  , "bare h", "xyz", "bare xq", "i", "5", "first" ])
   , ("factoring keeps a failure a failure",
       case parse shared "a+=;" of
-        Fail -> True
+        Fail _ -> True
         _    -> False)
   ]
   where
     okWith (OK r _ rest) want = r == want && rest == ""
-    okWith Fail          _    = False
+    okWith (Fail _)      _    = False
 
 -- Every level of this grammar would parse its operand twice without
 -- factoring — once by the alternative that fails at '+', once by the one
@@ -569,7 +569,7 @@ nestingCheck = do
       input = replicate depth '(' ++ "1+22" ++ replicate depth ')'
   r <- timeout 5000000 (evaluate (case parse nest input of
                                     OK n _ rest -> n == 3 && rest == ""
-                                    Fail        -> False))
+                                    Fail _        -> False))
   pure ("a shared prefix is parsed once, not once per alternative",
         r == Just True)
 
@@ -578,7 +578,7 @@ witnessCheck =
   ( "ntw parses through the witness it was given"
   , case parse ntwGrammar "12,345" of
       OK r _ rest -> r == (2, 3) && rest == ""
-      Fail        -> False )
+      Fail _        -> False )
 
 --------------------------------------------------------------------------------
 -- Extracting the grammars from an example's source

@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               typed-peg
-version:            0.5.0.0
+version:            0.6.0.0
 synopsis:           Type-safe PEG parser combinators
 description:
   A library for building Parsing Expression Grammars parsers
@@ -107,6 +107,18 @@ test-suite typed-peg-analysis
   other-extensions: TemplateHaskell, QuasiQuotes
   build-depends:
       base
+    , typed-peg
+
+test-suite typed-peg-errors
+  import:          common-opts
+  type:            exitcode-stdio-1.0
+  hs-source-dirs:  tests
+  main-is:         Errors.hs
+  other-extensions: TemplateHaskell, QuasiQuotes
+  build-depends:
+      base
+    , bytestring
+    , text
     , typed-peg
 
 benchmark typed-peg-bench
