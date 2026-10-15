@@ -16,6 +16,8 @@ grammar type-checks in about a second.
 - Indentation-sensitive parsing (`PEG.Indent`)
 - Quasi-quoter for concrete grammar syntax (`PEG.QQ`)
 - Source positions in semantic actions (`@`, `PEG.Location`)
+- Syntax errors reported with a line and a column: the furthest point the
+  parse reached
 - Parses any `PEG.Stream`: `String`, strict/lazy `Text`, strict/lazy
   `ByteString`
 
@@ -41,6 +43,37 @@ parse (lang (lineIndex src)) src
 
 Lines and columns count from 1.  The parser tracks only the offset, so a
 grammar that does not use `@` pays nothing for it.
+
+## Syntax errors
+
+A parse that fails says where:
+
+```haskell
+data Result s a = OK a s s | Fail !ParseError
+
+data ParseError = ParseError
+  { errLine, errColumn, errOffset :: !Int }
+```
+
+For the arithmetic grammar of the examples, with its start expression
+anchored as `%start e:expr !.`:
+
+```
+ghci> parse arith "1+*3"
+Fail (ParseError {errLine = 1, errColumn = 3, errOffset = 2})
+ghci> parse arith "(1+2"
+Fail (ParseError {errLine = 1, errColumn = 5, errOffset = 4})
+```
+
+The position is the **furthest** point at which any part of the grammar
+failed to match — an ordered choice backtracks before it tries its next
+alternative, so the point where the start expression finally gave up is
+usually the start of a rule, well before the mistake.  A string literal fails
+where it starts; nothing inside a lookahead (`!e`, `&e`) counts.  End the start
+expression with `!.` to make leftover input an error rather than `rest`.
+
+Only the offset is tracked while parsing; the line and column are computed
+once, when the parse has failed.
 
 ## Input streams
 
@@ -299,7 +332,7 @@ Bind it once and reuse it, rather than calling `parse grammar input` inline in
 a loop:
 
 ```haskell
-myParser :: String -> Result Exp
+myParser :: String -> Result String Exp
 myParser = parse myGrammar
 ```
 

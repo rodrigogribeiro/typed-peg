@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+### Breaking. A failed parse says where: `Fail ParseError`
+
+`Fail` carries the line, column and offset of the error (version 0.6.0.0):
+
+```haskell
+data Result s a = OK a s s | Fail !ParseError
+
+data ParseError = ParseError
+  { errLine   :: !Int   -- from 1
+  , errColumn :: !Int   -- from 1
+  , errOffset :: !Int   -- characters before the error
+  }
+```
+
+With `%start e:expr !.`, so that the whole input has to parse:
+
+```
+ghci> parse arith "1+*3"
+Fail (ParseError {errLine = 1, errColumn = 3, errOffset = 2})
+```
+
+The position is the *furthest* offset at which any part of the grammar failed
+during the parse, not where the start expression finally gave up: an ordered
+choice backtracks before trying its next alternative, so the latter is nearly
+always the start of some rule.  A string literal fails where it starts, the
+failure that ends a repetition counts, and nothing inside a lookahead does —
+so a `!.` ending the start expression reports the start of the leftover
+input.  Columns follow `PEG.Location`: a tab advances the column by one.
+
+Migration: a pattern `Fail` becomes `Fail _`, or `Fail e` to use the
+position.
+
+**How it is tracked.**  Every compiled step takes the furthest failure offset
+so far and returns it on both branches, as a boxed `Int` that is passed along
+unchanged unless the furthest point moves forward; the line and column are
+computed only after a parse has failed, from the consumed prefix of the input.
+`Step`, `Res` and therefore `compileGrammar` change type.
+
+Allocation per input byte on the benchmark grammars, against 0.5: within 1%
+on `arith`, `csv` and `quoted-*`; +1–4% on `json`, and on `idents` over
+`String`/`Text`; +5–8% on `nested`, deeply parenthesised input whose
+furthest point moves forward on nearly every character.  ByteString parsers
+allocate *less* on `json` and `quoted-lookahead`, because the instance now
+forces each character it reads rather than handing a predicate a thunk.
+
+`offsetToLineCol` walks the input only up to the offset instead of indexing
+all of it; its results are unchanged.
+
+New test suite `typed-peg-errors`: hand-picked cases for each rule above, and
+a reference interpreter compared with the compiled parser on 3000 generated
+grammars, over `String`, `Text` and `ByteString`, with and without layout.
+
 ### Source positions in semantic actions: `@` and `PEG.Location`
 
 A new `PExp` constructor, `GetOffset :: PExp s nt Int` (`getOffset`), consumes
