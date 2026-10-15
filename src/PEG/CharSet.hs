@@ -19,9 +19,12 @@ module PEG.CharSet
   , complementCS
   , nullCS
   , anyCS
+  , csRanges
+  , describeCS
   ) where
 
 import Data.Bits (setBit, testBit)
+import Data.List (sortOn)
 import Data.Char (chr, ord)
 import Data.Word (Word64)
 
@@ -103,3 +106,39 @@ anyCS = notInRanges []
 nullCS :: CharSet -> Bool
 nullCS (CharSet False 0 0 0 0 []) = True
 nullCS _                          = False
+
+-- | The ranges a set was built from, as maximal runs, with its polarity:
+-- 'True' when the set is everything /outside/ them.  Used to describe a set
+-- in an error message, so it is written for clarity, not speed.
+csRanges :: CharSet -> (Bool, [(Char, Char)])
+csRanges cs = (csNeg cs, runs [ c | c <- map chr [0 .. 255], rawMember c cs ]
+                         ++ sortOn fst (csWide cs))
+  where
+    runs [] = []
+    runs (c : rest) = go c c rest
+    go lo hi (c : rest)
+      | ord c == ord hi + 1 = go lo c rest
+    go lo hi rest         = (lo, hi) : runs rest
+
+-- | A set as the quasi-quoter would write it — @[a-z0-9_]@, @[^\"]@, or @.@
+-- for the set of every character — for an error message.  A @-@ is written
+-- as it is, so a set containing one does not always read back as itself.
+describeCS :: CharSet -> String
+describeCS cs = case csRanges cs of
+  (True, []) -> "."
+  (neg, rs)  -> "[" ++ (if neg then "^" else "") ++ concatMap range rs ++ "]"
+  where
+    range (lo, hi)
+      | lo == hi            = esc lo
+      | ord hi == ord lo + 1 = esc lo ++ esc hi
+      | otherwise           = esc lo ++ "-" ++ esc hi
+    esc c = case c of
+      '\n' -> "\\n"
+      '\t' -> "\\t"
+      '\r' -> "\\r"
+      '\0' -> "\\0"
+      '\\' -> "\\\\"
+      ']'  -> "\\]"
+      '['  -> "\\["
+      '^'  -> "\\^"
+      _    -> [c]

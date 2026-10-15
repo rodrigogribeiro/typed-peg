@@ -67,6 +67,8 @@ module PEG.Syntax
   , position
   , align
   , getOffset
+  , label
+  , hidden
   , (<$>.)
   , (<*>.)
   , (.>>.)
@@ -112,6 +114,7 @@ data Name (n :: Symbol) = Name
 -- * 'Position'— set the column relation for tokens inside the sub-expression
 -- * 'Align'  — require the next token to be aligned with the current position
 -- * 'GetOffset' — consume nothing, return the offset of the current position
+-- * 'Label'  — name the sub-expression in the \"expected\" list of an error
 data PExp (s :: Type) (nt :: Type -> Type) (a :: Type) where
   Pure     :: a -> PExp s nt a
   Term     :: Char -> PExp s nt Char
@@ -164,6 +167,14 @@ data PExp (s :: Type) (nt :: Type -> Type) (a :: Type) where
   -- semantic action learns where a node starts or ends; "PEG.Location" turns
   -- an offset into a line and a column.  Written @\@@ in the quasi-quoter.
   GetOffset :: PExp s nt Int
+  -- | Report the sub-expression, in the list of what was expected at a parse
+  -- error, by a name instead of by what is inside it.  It changes nothing
+  -- about what the sub-expression matches, and costs nothing unless a parse
+  -- fails.  The empty name hides the sub-expression from that list.  Written
+  -- @%label rule "name"@ in the quasi-quoter; see 'PEG.Parse.ParseError'.
+  Label    :: String
+           -> PExp s nt a
+           -> PExp s nt a
 
 instance Functor (PExp s nt) where
   fmap = Map
@@ -225,6 +236,18 @@ align = Align
 -- so far.  Consumes nothing and never fails.
 getOffset :: PExp s nt Int
 getOffset = GetOffset
+
+-- | Name an expression in the \"expected\" list of a parse error: when it
+-- fails at the error's position without having consumed anything, the list
+-- says the name instead of what the expression was looking for.
+label :: String -> PExp s nt a -> PExp s nt a
+label = Label
+
+-- | Keep an expression out of the \"expected\" list of a parse error
+-- altogether: @'label' \"\"@.  Meant for whitespace and comments, which
+-- could otherwise continue at almost any error.
+hidden :: PExp s nt a -> PExp s nt a
+hidden = Label ""
 
 -- | Infix synonym for 'fmapP'.
 (<$>.) :: (a -> b) -> PExp s nt a -> PExp s nt b
