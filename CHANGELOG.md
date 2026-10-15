@@ -70,7 +70,7 @@ With `%start e:expr !.`, so that the whole input has to parse:
 
 ```
 ghci> parse arith "1+*3"
-Fail (ParseError {errLine = 1, errColumn = 3, errOffset = 2})
+Fail (ParseError {errLine = 1, errColumn = 3, errOffset = 2, ...})
 ```
 
 The position is the *furthest* offset at which any part of the grammar failed
