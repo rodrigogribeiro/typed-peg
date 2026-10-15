@@ -118,6 +118,7 @@ test-suite typed-peg-errors
   build-depends:
       base
     , bytestring
+    , template-haskell
     , text
     , typed-peg
 

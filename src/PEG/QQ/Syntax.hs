@@ -14,6 +14,7 @@ module PEG.QQ.Syntax
   , P
   , parseGrammar
   , parseDirectives
+  , parseLabel
   , parseExpr
   , spaces
   ) where
@@ -29,7 +30,8 @@ data Def = Def String (Maybe String) PExpr
   deriving Show
 
 -- | A @%key value@ line in the header of a grammar: @%start@, @%name@,
--- @%env@, @%stream@, @%result@.  The value is the rest of the line.
+-- @%env@, @%stream@, @%result@, @%param@, @%label@.  The value is the rest of
+-- the line.
 data Directive = Directive String String
   deriving Show
 
@@ -382,3 +384,13 @@ parseDirectives = loop []
     isKeyChar c = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
     trim = dropWhile isSpaceC . reverse . dropWhile isSpaceC . reverse
     isSpaceC c = c == ' ' || c == '\t' || c == '\r'
+
+-- | The value of a @%label rule "name"@ directive: the rule and the name, in
+-- the syntax of a string literal of the grammar.  The name may be empty.
+parseLabel :: String -> Either String (String, String)
+parseLabel src = do
+  (rule, r1) <- ident src
+  (name, r2) <- strLit r1
+  case spaces r2 of
+    [] -> Right (rule, name)
+    r  -> errorAt "unexpected text after the name" r

@@ -18,11 +18,19 @@
 -- * A reference interpreter, written to be obvious rather than fast, against
 --   which the compiled parser is compared on a few thousand generated
 --   grammars and inputs, over every stream and with and without layout.
+--
+-- What was found and expected at the error is checked the same two ways: by
+-- cases for each rule 'PEG.Parse' states, and by the reference interpreter,
+-- which computes the expected list straight from its definition.
 module Main (main) where
 
+import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (unless)
-import Data.List     (isPrefixOf)
+import Data.Char     (isAlphaNum)
+import Data.List     (isPrefixOf, nub)
 import System.Exit   (exitFailure)
+import Language.Haskell.TH        (runQ)
+import Language.Haskell.TH.Quote  (quoteExp)
 
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.Text             as T
@@ -53,7 +61,7 @@ eof = Not AnyChar
 data Want = Want Int Int Int
 
 failsAt :: Result s a -> Want -> Bool
-failsAt (Fail e) (Want l c o) = e == ParseError l c o
+failsAt (Fail e) (Want l c o) = (errLine e, errColumn e, errOffset e) == (l, c, o)
 failsAt _        _            = False
 
 cases :: [(String, Bool)]
@@ -105,10 +113,49 @@ cases =
       in parse stmts src `failsAt` Want 2 10 17)
   , ("a quasi-quoted grammar that succeeds is unaffected",
       okIs (parse stmts "x := 1;\ny := 2 + 3;\n"))
+
+    -- What was found, and what was expected.  'calc' labels factor and name,
+    -- and hides ws.
+  , ("a label replaces what a rule that starts at the error looked for",
+      says calc "x := 1;\ny := (2 + ) * x;\nprint y;\n"
+        (2, 11) (FoundToken ")") [ExpLabel "an operand"])
+  , ("a rule that started before the error lists what it looked for",
+      -- factor began at the 2, so its label does not apply; one more digit
+      -- would have been accepted, and so would '*', '+' or ')'.
+      says calc "x := (1 + 2;\n"
+        (1, 12) (FoundToken ";")
+        [ExpClass "[0-9]", ExpChar '*', ExpChar '+', ExpChar ')'])
+  , ("a hidden rule is never listed, and a word is found whole",
+      says calc "x := 1\nprint x;\n"
+        (2, 1) (FoundToken "print") [ExpChar '*', ExpChar '+', ExpChar ';'])
+  , ("a literal, a label and the end of the input",
+      says calc "x := 1;\nprint x; @\n"
+        (2, 10) (FoundToken "@") [ExpString "print", ExpLabel "a name", ExpEnd])
+  , ("the end of the input is found at the end",
+      says calc "x := 1 +\n" (2, 1) FoundEnd [ExpLabel "an operand"])
+  , ("a negated class is described as it is written",
+      says quoted "\"abc" (1, 5) FoundEnd [ExpClass "[^\"]", ExpChar '"'])
+  , ("the message reads well",
+      case parse calc "x := (1 + 2;\n" of
+        Fail e -> renderParseError e
+                    == "1:12: unexpected ';', expecting [0-9], '*', '+' or ')'"
+        _      -> False)
+  , ("every stream finds and expects the same",
+      and [ errOf (parse calc s) == errOf (parse calc (T.pack s))
+              && errOf (parse calc s) == errOf (parse calc (BC.pack s))
+          | s <- [ "x := 1;\ny := (2 + ) * x;\n", "x := (1 + 2;\n"
+                 , "x := 1\nprint x;\n", "x := 1 +\n" ] ])
   ]
   where
     okIs (OK _ _ _) = True
     okIs _          = False
+
+    says :: Grammar String nt a -> String -> (Int, Int) -> Found -> [Expected]
+         -> Bool
+    says gr src (l, c) found expect = case parse gr src of
+      Fail e -> (errLine e, errColumn e) == (l, c)
+                  && errFound e == found && errExpected e == expect
+      _      -> False
 
     g :: Stream s => Grammar s (InEnv '[]) ()
     g = Grammar RNil ((Star (ch 'a' ~> ch '\n') ~> ch 'a' ~> ch 'b' ~> ch 'c')
@@ -131,6 +178,48 @@ cases =
   ws   :: ()     <- [ \t\n]*                   { () }
 |]
 
+-- | The grammar of the example in the documentation: factor and name are
+-- labelled, and ws is hidden.
+[pegGrammar|
+  %name   calc
+  %start  ss:prog !.
+  %label  factor "an operand"
+  %label  name   "a name"
+  %label  ws     ""
+
+  prog   :: Int    <- ws ss:stmt*                       { length ss }
+  stmt   :: ()     <- "print" ![a-z] ws expr ';' ws     { () }
+                   /  name ":=" ws expr ';' ws          { () }
+  expr   :: ()     <- term ('+' ws term)*               { () }
+  term   :: ()     <- factor ('*' ws factor)*           { () }
+  factor :: ()     <- [0-9]+ ws { () } / name { () } / '(' ws expr ')' ws { () }
+  name   :: ()     <- [a-z]+ ws                         { () }
+  ws     :: ()     <- [ \t\n]*                          { () }
+|]
+
+[pegGrammar|
+  %name   quoted
+  %start  q:str !.
+  str :: () <- '"' [^"]* '"'  { () }
+|]
+
+-- | A @%label@ the splice must refuse.  Run in 'IO', a failing quasi-quoter
+-- prints its message and throws one that only says it failed, so what is
+-- checked here is the refusal; the messages are on the test's output.
+labelErrors :: IO [String]
+labelErrors = concat <$> mapM refused
+  [ "%start a\n%label b \"x\"\na :: () <- 'a' { () }"               -- not a rule
+  , "%start a\n%label a \"x\"\n%label a \"y\"\na :: () <- 'a' { () }" -- twice
+  , "%start a\n%label a x\na :: () <- 'a' { () }" ]                  -- not a string
+  where
+    refused src = do
+      r <- try (runQ (quoteExp pegGrammar src)
+                  >>= \e -> evaluate (length (show e)))
+             :: IO (Either SomeException Int)
+      pure $ case r of
+        Left _  -> []
+        Right _ -> ["%label: accepted " ++ show src]
+
 --------------------------------------------------------------------------------
 -- The reference interpreter
 --------------------------------------------------------------------------------
@@ -149,6 +238,7 @@ data G
   | GStar G          -- ^ Only ever over something that consumes input.
   | GNot G
   | GOff
+  | GLabel String G  -- ^ The empty string hides.
   deriving Show
 
 -- | What 'PEG.Parse' documents, stated directly: run @g@ from @off@ with the
@@ -181,10 +271,68 @@ ref g far off inp = case g of
                  Left _  -> Right (far, off, inp)
                  Right _ -> Left (max far off)
   GOff      -> Right (far, off, inp)
+  GLabel _ a -> ref a far off inp
   where
     char p = case inp of
       (c : r) | p c -> Right (far, off + 1, r)
       _             -> Left (max far off)
+
+-- | What 'PEG.Parse' documents as expected at the error's offset @f@, stated
+-- directly: run @g@ from @off@, and return whether it matched (and where it
+-- got to) together with what it listed, in the order it was tried.
+refExp :: Int -> G -> Int -> String -> (Maybe (Int, String), [Expected])
+refExp f g off inp = case g of
+  GChar c   -> char (== c) (ExpChar c)
+  GSat cs   -> char (`elem` cs) (classOf cs)
+  GAny      -> char (const True) ExpAny
+  GStr lit
+    | lit `isPrefixOf` inp -> (Just (off + length lit, drop (length lit) inp), [])
+    | otherwise            -> (Nothing, here off (ExpString lit))
+  GSpan cs  -> let n = length (takeWhile (`elem` cs) inp)
+               in (Just (off + n, drop n inp), here (off + n) (classOf cs))
+  GSpan1 cs -> let n = length (takeWhile (`elem` cs) inp)
+               in if n == 0 then (Nothing, here off (classOf cs))
+                  else (Just (off + n, drop n inp), here (off + n) (classOf cs))
+  GSeq a b  -> case refExp f a off inp of
+                 (Nothing, ia)       -> (Nothing, ia)
+                 (Just (o, r), ia)   -> let (rb, ib) = refExp f b o r
+                                        in (rb, ia ++ ib)
+  GCh a b   -> case refExp f a off inp of
+                 (Nothing, ia) -> let (rb, ib) = refExp f b off inp
+                                  in (rb, ia ++ ib)
+                 r             -> r
+  GStar a   -> let go o r acc = case refExp f a o r of
+                                  (Nothing, ia)      -> (Just (o, r), acc ++ ia)
+                                  (Just (o', r'), ia) -> go o' r' (acc ++ ia)
+               in go off inp []
+  -- Nothing inside a lookahead is listed; only !. says what it wanted.
+  GNot a    -> case refExp f a off inp of
+                 (Nothing, _) -> (Just (off, inp), [])
+                 _            -> (Nothing, case a of
+                                             GAny -> here off ExpEnd
+                                             _    -> [])
+  GOff      -> (Just (off, inp), [])
+  GLabel l a -> let (ra, ia) = refExp f a off inp
+                    own | null l                  = []
+                        | off == f && not (null ia) = [ExpLabel l]
+                        | otherwise               = ia
+                in (ra, own)
+  where
+    here o e = [ e | o == f ]
+    char p e = case inp of
+      (c : r) | p c -> (Just (off + 1, r), [])
+      _             -> (Nothing, here off e)
+    classOf cs = case nub cs of
+      [c] -> ExpChar c
+      _   -> ExpClass (describeCS (fromList cs))
+
+-- | What the input has at an offset, stated directly.
+refFound :: String -> Int -> Found
+refFound s off = case drop off s of
+  []                      -> FoundEnd
+  (c : rest) | isWord c   -> FoundToken (c : takeWhile isWord rest)
+             | otherwise  -> FoundToken [c]
+  where isWord c = isAlphaNum c || c == '_'
 
 -- | Line and column of an offset, stated directly.
 refLineCol :: String -> Int -> (Int, Int)
@@ -209,6 +357,7 @@ toP g = case g of
   GStar a   -> () <$ starOf a
   GNot a    -> notOf a
   GOff      -> () <$ GetOffset
+  GLabel l a -> Label l (toP a)
   where
     -- Keep the operand bare where the compiler has a case for it.
     starOf (GChar c)    = () <$ Star (Term c)
@@ -267,6 +416,7 @@ grammar consuming d
         3 | not consuming -> GStar <$> grammar True (d - 1)
         4 | not consuming -> GNot <$> grammar False (d - 1)
         5 | not consuming -> pure GOff
+        6 -> GLabel <$> pick ["", "L1", "L2"] <*> grammar consuming (d - 1)
         _ -> leaf
   where
     leaf = do
@@ -288,7 +438,9 @@ input = do
 -- | What the reference says a parse of the whole grammar returns.
 expected :: G -> String -> Result String ()
 expected g s = case ref g 0 0 s of
-  Left f           -> let (l, c) = refLineCol s f in Fail (ParseError l c f)
+  Left f           -> let (l, c) = refLineCol s f
+                      in Fail (ParseError l c f (refFound s f)
+                                          (nub (snd (refExp f g 0 s))))
   Right (_, o, r)  -> OK () (take o s) r
 
 -- | One generated grammar and input, over every stream, with and without
@@ -333,8 +485,12 @@ main = do
       fails    = length [ () | (g, s) <- samples
                              , Fail _ <- [expected g s] ]
   mapM_ putStrLn (take 5 problems)
+  labelBad <- labelErrors
+  mapM_ putStrLn labelBad
+  putStrLn ("%label errors at the splice: " ++ show (3 - length labelBad)
+              ++ " of 3 reported")
   putStrLn ("generated: " ++ show (length samples) ++ " grammars ("
               ++ show fails ++ " failing parses), "
               ++ show (length problems) ++ " disagreements with the reference")
 
-  unless (null bad && null problems) exitFailure
+  unless (null bad && null problems && null labelBad) exitFailure

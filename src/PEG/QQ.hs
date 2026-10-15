@@ -51,7 +51,7 @@ import PEG.QQ.Compat (requiredKindedTV, requiredTV)
 import PEG.QQ.HsExp  (parseHsExp, parseHsType)
 import PEG.QQ.Syntax (Def (..), Directive (..), Item (..), PExpr (..),
                       RelS (..), parseDirectives, parseExpr, parseGrammar,
-                      spaces)
+                      parseLabel, spaces)
 
 -- | Translate a DSL expression, given a way to emit a reference to a
 -- non-terminal.
@@ -262,11 +262,11 @@ seqBody items act = do
 
     duplicates xs = [ x | x <- nub xs, length (filter (== x) xs) > 1 ]
 
-translateRules :: (String -> Q Exp) -> [Def] -> Q Exp
-translateRules _ [] = [| RNil |]
-translateRules ntRef (Def name _ expr : rest) = do
-  body  <- translateExprWith ntRef expr
-  rest' <- translateRules ntRef rest
+translateRules :: [(String, String)] -> (String -> Q Exp) -> [Def] -> Q Exp
+translateRules _ _ [] = [| RNil |]
+translateRules labels ntRef (Def name _ expr : rest) = do
+  body  <- withLabel labels name <$> translateExprWith ntRef expr
+  rest' <- translateRules labels ntRef rest
   let nameProxy = TH.AppTypeE (TH.ConE 'Name) (TH.LitT (TH.StrTyLit name))
   [| RCons $(pure nameProxy) $(pure body) $(pure rest') |]
 
@@ -329,7 +329,7 @@ pegRulesExp src = case parseGrammar src of
                          -- six spaces, so the body lines up under the bullet
                          -- GHC puts in front of the first line
                          [ "      " ++ l | d <- ds, l <- lines (renderDiagnostic d) ])
-      Right _ -> translateRules ntByName defs
+      Right _ -> translateRules [] ntByName defs
 
 --------------------------------------------------------------------------------
 -- pegGrammar: a whole grammar, environment included
@@ -412,6 +412,12 @@ pegRulesExp src = case parseGrammar src of
 -- [@%param@] @%param name :: Type@, in declaration position: the grammar and
 --            every rule take an argument @name@, in scope in every semantic
 --            action.  May be repeated; the arguments are taken in order.
+-- [@%label@] @%label rule "name"@: when the parse fails, and @rule@ failed
+--            at the error's position without consuming anything, the list of
+--            what was expected says @name@ instead of what @rule@ was looking
+--            for.  @%label rule ""@ keeps @rule@ out of that list altogether,
+--            which is what whitespace wants.  May be repeated, once per rule;
+--            see 'PEG.Parse.ParseError' and 'PEG.Syntax.Label'.
 pegGrammar :: QuasiQuoter
 pegGrammar = QuasiQuoter
   { quoteExp  = pegGrammarExp
@@ -419,6 +425,12 @@ pegGrammar = QuasiQuoter
   , quotePat  = \_ -> fail "pegGrammar: cannot be used as a pattern"
   , quoteType = \_ -> fail "pegGrammar: cannot be used as a type"
   }
+
+-- | Wrap a rule's body in its @%label@, if it has one.
+withLabel :: [(String, String)] -> String -> Exp -> Exp
+withLabel labels name body = case lookup name labels of
+  Nothing -> body
+  Just l  -> TH.AppE (TH.AppE (TH.ConE 'Label) (TH.LitE (TH.StringL l))) body
 
 -- | A grammar that has been parsed and checked: the pieces both forms need.
 --
@@ -428,9 +440,10 @@ pegGrammar = QuasiQuoter
 -- diagnostics it raises.  It is still run, and it is now the only thing that
 -- rejects a left-recursive grammar; see "PEG.Grammar".
 data GrammarSrc = GrammarSrc
-  { gsDirs  :: [Directive]
-  , gsDefs  :: [Def]
-  , gsStart :: PExpr
+  { gsDirs   :: [Directive]
+  , gsDefs   :: [Def]
+  , gsStart  :: PExpr
+  , gsLabels :: [(String, String)]  -- ^ @%label@: rule, name
   }
 
 gsNames :: GrammarSrc -> [String]
@@ -468,8 +481,20 @@ parseGrammarSrc src = do
                         [ "      " ++ l
                         | d <- ds, l <- lines (renderDiagnostic (unstart d)) ])
     Right _  -> pure ()
-  pure (GrammarSrc dirs defs start)
+  labels <- mapM (orFailIn "%label" . parseLabel) (directives "label" dirs)
+  let ruleNames = [ n | Def n _ _ <- defs ]
+  case [ r | (r, _) <- labels, r `notElem` ruleNames ] of
+    []    -> pure ()
+    (r:_) -> fail ("pegGrammar: %label names " ++ r ++ ", which is not a rule;\n\
+                   \      the grammar defines " ++ unwords ruleNames)
+  case dupsOf (map fst labels) of
+    []    -> pure ()
+    (r:_) -> fail ("pegGrammar: the rule " ++ r ++ " has two %label directives")
+  pure (GrammarSrc dirs defs start labels)
   where
+    orFailIn d = either (\e -> fail ("pegGrammar: in " ++ d ++ ": " ++ e)) pure
+    dupsOf xs = [ x | (i, x) <- zip [0 :: Int ..] xs, x `elem` take i xs ]
+
     orFail = either (\e -> fail ("pegGrammar: parse error: " ++ e)) pure
 
     -- The start expression is not a rule, so it should not be named as one.
@@ -493,7 +518,7 @@ normaliseStart (ESeq [Item Nothing e] Nothing) = e
 normaliseStart e                               = e
 
 knownDirectives :: [String]
-knownDirectives = ["start", "name", "env", "stream", "result", "param"]
+knownDirectives = ["start", "name", "env", "stream", "result", "param", "label"]
 
 directive :: String -> [Directive] -> Maybe String
 directive k ds = case directives k ds of
@@ -521,7 +546,7 @@ pegGrammarExp src = do
     fail "pegGrammar: %param is only meaningful in declaration position;\n\
          \      an expression can use the variables in scope around it"
   let ntRef = ntByWitness (gsNames gs)
-  rules <- translateRules ntRef (gsDefs gs)
+  rules <- translateRules (gsLabels gs) ntRef (gsDefs gs)
   start <- translateExprWith ntRef (gsStart gs)
   [| Grammar $(pure rules) $(pure start) |]
 
@@ -635,7 +660,7 @@ pegGrammarDec src = do
   -- One binding per rule, with the declared type as its signature.
   ruleDecls <- fmap concat $ mapM
     (\(Def n _ e, (_, ty)) -> do
-        body <- translateExprWith ntRef e
+        body <- withLabel (gsLabels gs) n <$> translateExprWith ntRef e
         pure [ TH.SigD (ruleVar n)
                  (signature (foldl TH.AppT (TH.ConT ''PExp) [streamT, ntT, ty]))
              , TH.FunD (ruleVar n)
