@@ -218,6 +218,9 @@ at idx = uncurry Loc . lineCol idx
   %stream String
   %param  idx :: LineIndex
   %start  prog
+  %label  atom "an operand"
+  %label  name "a name"
+  %label  ws   ""
 
   prog :: [Stmt] <- ws ss:stmt* !.                         { ss }
   stmt :: Stmt   <- p:@ "print" ![a-z] ws e:expr ';' ws    { Print (at idx p) e }
@@ -361,6 +364,9 @@ patternsMain = do
   putStrLn "### syntax errors"
   let bad = "x := 1;\ny := 2 + ;\n42;\nz := y;\n"
   putStrLn (showR (parse (located (lineIndex bad)) bad))
+  case parse (located (lineIndex bad)) bad of
+    Fail e -> putStrLn (renderParseError e)
+    OK{}   -> pure ()
   case parse (recovering (lineIndex bad)) bad of
     OK rs _ _ -> mapM_ (putStrLn . either id show) rs
     Fail e    -> putStrLn ("Fail " ++ showErr e)

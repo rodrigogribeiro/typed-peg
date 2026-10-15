@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### A failed parse says what it found and what it expected; `%label`
+
+`ParseError` gains two fields, still in 0.6.0.0:
+
+```haskell
+data ParseError = ParseError
+  { errLine, errColumn, errOffset :: !Int
+  , errFound    :: Found        -- FoundToken "print" | FoundEnd
+  , errExpected :: [Expected]   -- ExpChar, ExpString, ExpClass, ExpAny,
+  }                             -- ExpEnd, ExpLabel
+```
+
+and `renderParseError` writes them as
+`1:12: unexpected ';', expecting [0-9], '*', '+' or ')'`.  What was found is a
+whole word when the error is on a letter, digit or `_`, and a single
+character otherwise.
+
+What was expected is everything that failed exactly at the error's offset:
+characters, classes and literals as themselves, a class repeated with `*` or
+`+` that stops there, and `!.` as the end of the input; nothing inside a
+lookahead.  A new directive names rules in that list:
+
+```
+%label factor "an operand"   -- listed as "an operand"
+%label ws     ""             -- never listed
+```
+
+A labelled rule that *starts* at the error contributes its name instead of
+what it looked for; one that started before contributes what it looked for.
+The splice rejects a `%label` for a rule that does not exist, a rule
+labelled twice, and a name that is not a string literal.  For grammars
+built with combinators there is a `Label` constructor, `label` and `hidden`.
+
+**Cost: none while parsing.**  The grammar is compiled a second time over a
+different failure tracker, and that copy is run only after a parse has
+failed, and only if `errExpected` is looked at; while parsing, the tracker is
+the `Int` that already tracked the position.  Allocation per input byte on
+the benchmarks is unchanged (identical on most rows, +0.4% on `json`).
+`Step` and `Res` take the tracker as a parameter, and `compileGrammar` a
+`Tracker` constraint.
+
+Making the compiler generic over the tracker exposed an optimiser hazard: GHC
+eta-expanded the function that compiles a node, and then compiled the grammar
+again on every step it ran.  Each node is now returned boxed from a
+`NOINLINE` function, which a comment in `PEG.Parse` explains.
+
+`typed-peg-errors` now checks the found token and the expected list as
+well: cases for each rule above, `%label` errors at the splice, and the
+reference interpreter, extended with labels, on 3000 generated grammars.
+
 ### Breaking. A failed parse says where: `Fail ParseError`
 
 `Fail` carries the line, column and offset of the error (version 0.6.0.0):

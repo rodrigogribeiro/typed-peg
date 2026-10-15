@@ -16,8 +16,9 @@ grammar type-checks in about a second.
 - Indentation-sensitive parsing (`PEG.Indent`)
 - Quasi-quoter for concrete grammar syntax (`PEG.QQ`)
 - Source positions in semantic actions (`@`, `PEG.Location`)
-- Syntax errors reported with a line and a column: the furthest point the
-  parse reached
+- Syntax errors reported with a line and a column — the furthest point the
+  parse reached — what was found there and what was expected, with rules
+  named by `%label`
 - Parses any `PEG.Stream`: `String`, strict/lazy `Text`, strict/lazy
   `ByteString`
 
@@ -46,24 +47,48 @@ grammar that does not use `@` pays nothing for it.
 
 ## Syntax errors
 
-A parse that fails says where:
+A parse that fails says where, what it found there, and what it expected:
 
 ```haskell
 data Result s a = OK a s s | Fail !ParseError
 
 data ParseError = ParseError
-  { errLine, errColumn, errOffset :: !Int }
+  { errLine, errColumn, errOffset :: !Int
+  , errFound    :: Found          -- a word, a character, or the end
+  , errExpected :: [Expected]     -- 'x', "while", [0-9], end of input, a label
+  }
+
+renderParseError :: ParseError -> String
 ```
 
-For the arithmetic grammar of the examples, with its start expression
-anchored as `%start e:expr !.`:
+`%label` names a rule in that list, and `%label rule ""` keeps it out — which
+is what whitespace wants:
+
+```haskell
+[pegGrammar|
+  %name   prog
+  %stream String
+  %start  ss:prog !.
+  %label  factor "an operand"
+  %label  name   "a name"
+  %label  ws     ""
+  ...
+|]
+```
+
+`renderParseError` on three inputs that do not parse:
 
 ```
-ghci> parse arith "1+*3"
-Fail (ParseError {errLine = 1, errColumn = 3, errOffset = 2})
-ghci> parse arith "(1+2"
-Fail (ParseError {errLine = 1, errColumn = 5, errOffset = 4})
+x := (1 + 2;                1:12: unexpected ';', expecting [0-9], '*', '+' or ')'
+x := 1;                     2:11: unexpected ')', expecting an operand
+y := (2 + ) * x;
+x := 1;                     2:10: unexpected '@', expecting "print", a name or end of input
+print x; @
 ```
+
+A label replaces what its rule looked for when the rule *starts* at the
+error; one that started earlier lists what it looked for, which is more
+precise — above, one more digit would have continued the `2`.
 
 The position is the **furthest** point at which any part of the grammar
 failed to match — an ordered choice backtracks before it tries its next
@@ -73,7 +98,9 @@ where it starts; nothing inside a lookahead (`!e`, `&e`) counts.  End the start
 expression with `!.` to make leftover input an error rather than `rest`.
 
 Only the offset is tracked while parsing; the line and column are computed
-once, when the parse has failed.
+once, when the parse has failed.  What was expected is found by running the
+grammar a second time, after a failure and only if `errExpected` is looked
+at, so a parse that succeeds costs exactly what it did without any of this.
 
 ## Input streams
 
